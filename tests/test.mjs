@@ -256,23 +256,18 @@ assert(
 }
 
 // --- 8. the model-key codec: slash wins, colon is legacy, neither is undefined.
-{
-  assert(
-    parseModelKey("a/b").provider === "a" && parseModelKey("a/b").modelId === "b",
-    "t8: slash splits",
-  );
-  assert(
-    parseModelKey("a:b").provider === "a" && parseModelKey("a:b").modelId === "b",
-    "t8: colon splits",
-  );
-  assert(parseModelKey("a:b/c").modelId === "c", "t8: slash wins when both separators are present");
-  assert(parseModelKey("gpt-4") === undefined, "t8: no separator returns undefined");
-  assert(parseModelKey("/b") === undefined, "t8: a leading separator returns undefined");
-  assert(
-    modelKey({ provider: "a", id: "b" }) === "a/b",
-    "t8: modelKey composes the canonical form",
-  );
-}
+assert(
+  parseModelKey("a/b").provider === "a" && parseModelKey("a/b").modelId === "b",
+  "t8: slash splits",
+);
+assert(
+  parseModelKey("a:b").provider === "a" && parseModelKey("a:b").modelId === "b",
+  "t8: colon splits",
+);
+assert(parseModelKey("a:b/c").modelId === "c", "t8: slash wins when both separators are present");
+assert(parseModelKey("gpt-4") === undefined, "t8: no separator returns undefined");
+assert(parseModelKey("/b") === undefined, "t8: a leading separator returns undefined");
+assert(modelKey({ provider: "a", id: "b" }) === "a/b", "t8: modelKey composes the canonical form");
 
 // --- 9. the accumulator spread. The negative case is the one that matters: a bare array
 //        drops every peer draft, because emitBoundary REPLACES the accumulator.
@@ -339,51 +334,49 @@ assert(
 
 // --- 11. the child-session veto. The first case is the regression test for the bug where
 //         reading SystemMessage.content alone could never fire.
-{
-  assert(
-    isChildSession([
-      { role: "system", content: "", sections: { preamble: marker("codebase-locator") } },
-    ]),
-    "t11: the marker in sections.preamble with empty content is caught",
-  );
-  assert(
-    isChildSession([{ role: "system", content: marker("x"), sections: {} }]),
-    "t11: the marker in content is caught",
-  );
-  assert(
-    isChildSession([
-      { role: "system", content: "", sections: { preamble: `intro${marker("x")}tail` } },
-    ]),
-    "t11: the marker anywhere in a section is caught",
-  );
-  assert(
-    !isChildSession([
-      {
-        role: "system",
-        content: "You are an expert coding assistant",
-        sections: { preamble: "You are an expert coding assistant" },
-      },
-    ]),
-    "t11: a main-session prompt is not caught",
-  );
-  assert(
-    !isChildSession([{ role: "user", content: marker("x") }]),
-    "t11: a user message quoting the marker is not caught — only system messages are scanned",
-  );
-  assert(!isChildSession([]), "t11: an empty context is not a child session");
-  assert(
-    CHILD_MARKER_PATTERN.test(marker("anything")),
-    "t11: the pattern matches the live prompts.ts:62 literal",
-  );
-  assert(
-    !CHILD_MARKER_PATTERN.test("You are a child subagent"),
-    "t11: the stale settings.json:84-90 pattern is rejected",
-  );
-  assert(
-    !CHILD_MARKER_PATTERN.test("<active_agent>"),
-    "t11: a tag with no name attribute is rejected",
-  );
-}
+assert(
+  isChildSession([
+    { role: "system", content: "", sections: { preamble: marker("codebase-locator") } },
+  ]),
+  "t11: the marker in sections.preamble with empty content is caught",
+);
+assert(
+  isChildSession([{ role: "system", content: marker("x"), sections: {} }]),
+  "t11: the marker in content is caught",
+);
+assert(
+  isChildSession([
+    { role: "system", content: "", sections: { preamble: `intro${marker("x")}tail` } },
+  ]),
+  "t11: the marker anywhere in a section is caught",
+);
+assert(
+  !isChildSession([
+    {
+      role: "system",
+      content: "You are an expert coding assistant",
+      sections: { preamble: "You are an expert coding assistant" },
+    },
+  ]),
+  "t11: a main-session prompt is not caught",
+);
+assert(
+  !isChildSession([{ role: "user", content: marker("x") }]),
+  "t11: a user message quoting the marker is not caught — only system messages are scanned",
+);
+assert(!isChildSession([]), "t11: an empty context is not a child session");
+assert(
+  CHILD_MARKER_PATTERN.test(marker("anything")),
+  "t11: the pattern matches the live prompts.ts:62 literal",
+);
+assert(
+  !CHILD_MARKER_PATTERN.test("You are a child subagent"),
+  "t11: the stale settings.json:84-90 pattern is rejected",
+);
+assert(
+  !CHILD_MARKER_PATTERN.test("<active_agent>"),
+  "t11: a tag with no name attribute is rejected",
+);
 
 // --- 12. the ALS probe degrades instead of throwing, and the log covers every shape.
 {
@@ -453,22 +446,20 @@ assert(
 }
 
 // --- 15. the advisor call: happy path, error surfacing, and fail-open.
-{
-  assert(
-    extractAdvisorText({
-      content: [
-        { type: "thinking", thinking: "x" },
-        { type: "text", text: "a" },
-        { type: "text", text: "b" },
-      ],
-    }) === "a\nb",
-    "t15: text blocks are joined and thinking is ignored",
-  );
-  assert(
-    extractAdvisorText({ content: [{ type: "thinking", thinking: "x" }] }) === "",
-    "t15: no text yields an empty string",
-  );
-}
+assert(
+  extractAdvisorText({
+    content: [
+      { type: "thinking", thinking: "x" },
+      { type: "text", text: "a" },
+      { type: "text", text: "b" },
+    ],
+  }) === "a\nb",
+  "t15: text blocks are joined and thinking is ignored",
+);
+assert(
+  extractAdvisorText({ content: [{ type: "thinking", thinking: "x" }] }) === "",
+  "t15: no text yields an empty string",
+);
 
 // --- 15b. stripAdvisorMarkup: the four passes, the AC1 invariant, and exact identity.
 {
