@@ -1,0 +1,5 @@
+#!/bin/sh
+# Fast local checks before a commit exists. Activate with:
+#   git config core.hooksPath .githooks
+npm test || exit 1
+npx biome check . || exit 1

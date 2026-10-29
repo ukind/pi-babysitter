@@ -1,0 +1,21 @@
+{
+  "name": "advisor-turn-gate",
+  "version": "1.0.0",
+  "description": "Pi coding-agent extension: a senior-engineer advisor reviews the transcript every N turns.",
+  "type": "module",
+  "private": true,
+  "license": "MIT",
+  "scripts": {
+    "test": "node --experimental-strip-types tests/test.mjs",
+    "lint": "biome check .",
+    "format": "biome check --write .",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.4",
+    "@earendil-works/pi-ai": "^1.4.0",
+    "@earendil-works/pi-coding-agent": "^1.4.0",
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
