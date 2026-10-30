@@ -1106,8 +1106,9 @@ for (const [name, response, check] of runCases) {
   assert(evaluate("DROP TABLE users;") === "SQL drop statement", "t19: the reason names the rule");
 }
 
-// --- 19b. the refspec force marker (F009): a leading + on a refspec is git's own force
-//          signal, and the branch matcher sees it with the + normalized away.
+// --- 19b. the refspec force markers (F009, F021, F022): a leading + on a refspec is
+//          git's own force signal, and every refspec token is matched individually
+//          against the protected-branch shape.
 {
   const blocked = [
     "git push origin +main",
@@ -1120,21 +1121,29 @@ for (const [name, response, check] of runCases) {
     "git push --force-with-lease origin +main",
     "git push origin main +main",
     "git push origin +main:main",
+    "git push --force origin refs/heads/main",
+    "git push origin +refs/heads/main",
+    "git push -f origin HEAD:refs/heads/main",
+    "git push origin --force refs/heads/main",
+    "git push origin +:main",
   ];
   for (const command of blocked) {
     assert(evaluate(command) !== null, `t19b: blocked: ${command}`);
   }
-  assert(blocked.length === 10, "t19b: 10 forced-refspec forms block");
+  assert(blocked.length === 15, "t19b: 15 forced-refspec forms block");
   assert(
     evaluate("git push origin +main") === "forced push to a protected branch",
     "t19b: the + form reports the same reason as the flag form",
   );
   // The force-with-lease allowance survives, scoped to UNMARKED refspecs; a +
-  // on an unprotected branch is still an ordinary push.
+  // on an unprotected branch is still an ordinary push; and a forced push of
+  // an UNPROTECTED branch alongside a plain protected one no longer convicts
+  // the whole command (F022's false positive).
   const allowed = [
     "git push --force-with-lease origin main",
     "git push origin +feature/x",
     "git push origin feature/x",
+    "git push origin main +feature/x",
   ];
   for (const command of allowed) {
     assert(evaluate(command) === null, `t19b: allowed: ${command}`);

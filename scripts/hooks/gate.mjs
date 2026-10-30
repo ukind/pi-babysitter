@@ -67,17 +67,24 @@ function blocksProtectedForcePush(command) {
   // the +: `git push origin +main` and `git push --force-with-lease origin
   // +main` carry no --force or -f at all.
   const flagForced = /\s--force(?!-with-lease)\b|\s-f\b/.test(command);
-  const plusForced = tokens.some((token) => token.startsWith("+"));
-  if (!flagForced && !plusForced) return false;
-  // Normalize the + away BEFORE the branch match, or +main, +HEAD:main, and
-  // mixed refspecs (`git push origin main +main`) slip past the matcher.
-  const normalized = tokens
-    .map((token) => (token.startsWith("+") ? token.slice(1) : token))
-    .join(" ");
-  const protectedBranch = /\s(?:origin\s+)?(?:(?:HEAD|HEAD~\d+):)?(?:main|master)\b/.test(
-    normalized,
-  );
-  return protectedBranch;
+  const anyPlus = tokens.some((token) => token.startsWith("+"));
+  if (!flagForced && !anyPlus) return false;
+  // Per-token refspec matching (F021, F022). The old form stripped every +
+  // and matched one whitespace-anchored regex over the rejoined string, so a
+  // fully-qualified ref (`refs/heads/main`) hid `main` behind the slash and
+  // bypassed the matcher, while an unrelated `+feature/x` convicted the whole
+  // command once its `+` was erased. git semantics: an explicit flag forces
+  // EVERY refspec; a `+` forces only its own token. Protection keys on the
+  // DESTINATION, so any source prefix before the colon is allowed —
+  // `+main:main`, `HEAD:refs/heads/main`, and the empty-source delete form
+  // `:main` still block.
+  const protectedBranch = /^(?:[^:]*:)?(?:refs\/heads\/)?(?:main|master)$/;
+  return tokens.some((token) => {
+    if (token.startsWith("-")) return false;
+    const forced = flagForced || token.startsWith("+");
+    const refspec = token.startsWith("+") ? token.slice(1) : token;
+    return forced && protectedBranch.test(refspec);
+  });
 }
 
 /**
