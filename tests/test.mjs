@@ -54,8 +54,14 @@ import {
   stripToolDeclarations,
 } from "../prompt.ts";
 import { reportFailure } from "../report.ts";
+import { syntaxCheck } from "../scripts/hooks/feedback.mjs";
 import { evaluate } from "../scripts/hooks/gate.mjs";
-import { isHookInvocation, parseHookStdin, readHookField } from "../scripts/hooks/lib.mjs";
+import {
+  describeSpawnResult,
+  isHookInvocation,
+  parseHookStdin,
+  readHookField,
+} from "../scripts/hooks/lib.mjs";
 
 const assert = (cond, msg) => {
   if (!cond) {
@@ -1166,5 +1172,63 @@ for (const [name, response, check] of runCases) {
   assert(
     readHookField(undefined, "command") === undefined,
     "t19c: a missing payload returns undefined",
+  );
+}
+
+// --- 20. the feedback hook's syntax check (F018): the spawnSync decision table, with the
+//         timeout named. Node 22+ sets error=ETIMEDOUT alongside status=null and signal on
+//         a spawnSync timeout (verified live on v24.14.0), so the timeout shape rides the
+//         error branch — not the audit's traced "exit code null" fall-through.
+{
+  // A real valid file: the ok branch, through syntaxCheck itself.
+  const valid = join(tmpRoot, "syntax-valid.mjs");
+  writeFileSync(valid, "export const ok = 1;\n");
+  const okResult = syntaxCheck(valid);
+  assert(okResult.ok && okResult.detail === "syntax ok", "t20: a valid file reports syntax ok");
+
+  // A real broken file: the stderr branch carries node's own syntax error text.
+  const broken = join(tmpRoot, "syntax-broken.mjs");
+  writeFileSync(broken, "const = ;\n");
+  const badResult = syntaxCheck(broken);
+  assert(
+    !badResult.ok && badResult.detail.length > 0,
+    "t20: a broken file carries the stderr text",
+  );
+  assert(
+    !/exit code/.test(badResult.detail),
+    "t20: a syntax error reports stderr, never the bare exit code",
+  );
+
+  // The F018 crux, constructed: the spawnSync timeout shape on Node 22+ — error set
+  // (ETIMEDOUT), status null, signal SIGTERM.
+  const timedOut = describeSpawnResult({
+    error: new Error("spawnSync node.exe ETIMEDOUT"),
+    status: null,
+    signal: "SIGTERM",
+  });
+  assert(
+    !timedOut.ok && timedOut.detail === "timed out after 10s (signal SIGTERM)",
+    "t20: the timeout shape reports the timeout, not the ETIMEDOUT noise",
+  );
+
+  // A spawn error without the timeout shape (spawn failure, no signal): the raw message.
+  const spawnedError = describeSpawnResult({ error: new Error("spawn failed"), status: null });
+  assert(
+    !spawnedError.ok && spawnedError.detail === "spawn failed",
+    "t20: a plain spawn error surfaces its message",
+  );
+
+  // The no-error kill shape (external SIGTERM): reported as a kill, never as a timeout.
+  const killed = describeSpawnResult({ status: null, signal: "SIGTERM" });
+  assert(
+    !killed.ok && killed.detail === "killed by SIGTERM before exit",
+    "t20: a signal kill without an error is not claimed as a timeout",
+  );
+
+  // A non-zero exit with no stderr names the exit code.
+  const silentFail = describeSpawnResult({ status: 1, stderr: null });
+  assert(
+    !silentFail.ok && silentFail.detail === "exit code 1",
+    "t20: a non-zero exit with no stderr names the exit code",
   );
 }

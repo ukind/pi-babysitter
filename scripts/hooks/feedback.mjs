@@ -12,16 +12,15 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { isHookInvocation, parseHookStdin, readHookField } from "./lib.mjs";
+import { describeSpawnResult, isHookInvocation, parseHookStdin, readHookField } from "./lib.mjs";
 
 const CHECKED_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]);
 
 export function syntaxCheck(file) {
   const result = spawnSync(process.execPath, ["--check", file], { timeout: 10_000 });
-  if (result.error) return { ok: false, detail: result.error.message };
-  if (result.status === 0) return { ok: true, detail: "syntax ok" };
-  const stderr = result.stderr?.toString().trim() ?? "";
-  return { ok: false, detail: stderr.length > 0 ? stderr : `exit code ${result.status}` };
+  // The spawnSync decision table lives in describeSpawnResult (lib.mjs): the timeout is
+  // named as a timeout there instead of surfacing raw ETIMEDOUT noise (F018).
+  return describeSpawnResult(result);
 }
 
 if (isHookInvocation(process.argv, "feedback.mjs")) {

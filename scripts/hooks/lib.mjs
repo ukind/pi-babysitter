@@ -44,3 +44,29 @@ export function parseHookStdin(raw) {
 export function readHookField(payload, key) {
   return payload?.tool_input?.[key] ?? payload?.toolInput?.[key];
 }
+
+/**
+ * Turn one spawnSync result into the { ok, detail } verdict the feedback hook reports.
+ *
+ * Branch order is the F018 fix, and it follows Node's real spawnSync shapes: a timeout
+ * sets error (ETIMEDOUT) alongside status=null and a signal, so the timeout shape is
+ * checked inside the error branch first — the timeout reports as a timeout, and a plain
+ * spawn failure still surfaces its own message. Then a clean exit, then a signal kill
+ * without an error (reported as a kill, never claimed as a timeout), then the ordinary
+ * non-zero exit with its stderr, and the bare exit code only when stderr is empty.
+ * The "after 10s" wording mirrors syntaxCheck's 10s budget — the only caller.
+ */
+export function describeSpawnResult(result) {
+  if (result.error) {
+    if (result.status === null && result.signal) {
+      return { ok: false, detail: `timed out after 10s (signal ${result.signal})` };
+    }
+    return { ok: false, detail: result.error.message };
+  }
+  if (result.status === 0) return { ok: true, detail: "syntax ok" };
+  if (result.status === null && result.signal) {
+    return { ok: false, detail: `killed by ${result.signal} before exit` };
+  }
+  const stderr = result.stderr?.toString().trim() ?? "";
+  return { ok: false, detail: stderr.length > 0 ? stderr : `exit code ${result.status}` };
+}
