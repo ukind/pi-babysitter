@@ -9,8 +9,9 @@ advice as a `custom_message` entry in the durable transcript.
 The gate ships disabled: `model` is empty by default, and an empty model skips the
 advisor call entirely. To activate the gate:
 
-1. Set `model` in `config.json` to `provider/modelId`.
-2. Set `interval` to the number of turns between advisor calls.
+1. Copy `config.example.json` to `config.json`.
+2. Set `model` in `config.json` to `provider/modelId`.
+3. Set `interval` to the number of turns between advisor calls.
 
 ## Config
 
