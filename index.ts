@@ -1,8 +1,7 @@
 import type { BoundaryResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveAdvisorModel, runAdvisor, stripAdvisorMarkup } from "./advisor";
 import { loadConfig, parseModelKey, shouldGate } from "./config";
-import type { ChildSessionProbe } from "./guard";
-import { isChildSession, loadChildSessionProbe, logProbeReading } from "./guard";
+import { isChildSession } from "./guard";
 import { buildAdvisorMessages } from "./prompt";
 import { reportFailure } from "./report";
 
@@ -40,10 +39,6 @@ function buildCorrection(
 }
 
 export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
-  // Advisory only. See guard.ts for why this is not the guard.
-  const probe: ChildSessionProbe | undefined = await loadChildSessionProbe();
-  logProbeReading(probe);
-
   pi.on("turn_end", async (event, ctx): Promise<BoundaryResult | undefined> => {
     // Config is read per dispatch, not once at factory time, so interval and model
     // can be retuned without a reload.
@@ -57,8 +52,7 @@ export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
     // An aborted or errored turn has no work worth reviewing.
     if (event.outcome !== "completed") return;
 
-    // Advisory early-out, then the authoritative veto.
-    if (probe?.()) return;
+    // The authoritative veto.
     if (isChildSession(event.context.llmMessages)) return;
 
     // config.ts already dropped an unparseable model, so this is a safety net.

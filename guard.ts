@@ -1,13 +1,10 @@
 /**
  * guard.ts — subagent inertness for the advisor gate.
  *
- * Two mechanisms, in order of authority:
+ * One mechanism: `isChildSession` — the handler-time marker veto. AUTHORITATIVE.
  *
- *   1. `isChildSession` — the handler-time marker veto. AUTHORITATIVE.
- *   2. `loadChildSessionProbe` — the AsyncLocalStorage read. ADVISORY.
- *
- * The ALS is advisory for two independent reasons, either of which alone would disable
- * it:
+ * There is deliberately NO AsyncLocalStorage probe. Two independent reasons, either of
+ * which alone is enough:
  *
  *   - SCOPE. `childSessionContext` is documented as marking "resource loading/session
  *     construction performed for a subagent"
@@ -15,8 +12,7 @@
  *     `runInChildSessionContext` wraps `createAgentSession` (src/agent-runner.ts:1106)
  *     and `loader.reload()` (src/agent-runner.ts:859), not the agent run. Whether a
  *     `turn_end` handler ever executes inside that scope is not determinable
- *     statically, which is why the probe is called per turn rather than cached as a
- *     factory-time constant.
+ *     statically.
  *   - IDENTITY. `loadExtensionModule` builds a fresh jiti per extension with
  *     `moduleCache: false`
  *     (install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js:480-483).
@@ -24,11 +20,12 @@
  *     (npm/node_modules/@tintinweb/pi-subagents/package.json:62-64), so the runtime
  *     loads `src/child-context.ts` inside ITS jiti. This extension's jiti imports the
  *     same FILE but builds a second module object with a second `AsyncLocalStorage`,
- *     distinct from the one `src/agent-runner.ts:859` and `:1106` write.
+ *     distinct from the one `src/agent-runner.ts:859` and `:1106` write. A probe
+ *     imported here reads a storage nobody writes, so it reports `false` in every
+ *     session, including a real child.
  *
- * When the two disagree, the marker veto wins. A probe that reads `false` inside a real
- * child session costs one wasted call; a veto that misses costs a billed advisor call
- * and a committed entry in a session that must stay inert.
+ * The cost of a missed child is a billed advisor call and a committed entry in a session
+ * that must stay inert, so the veto errs toward switching the gate off.
  *
  * This module imports nothing, so the offline test resolves no package at all.
  */
@@ -48,67 +45,6 @@
  * this pattern matches the live literal and rejects that stale one.
  */
 export const CHILD_MARKER_PATTERN = /<active_agent\s+name="[^"]*"\s*\/>/;
-
-/**
- * Relative shim to the subagents package's AsyncLocalStorage.
- *
- * A bare `@tintinweb/pi-subagents/src/child-context.js` does not resolve: there is no
- * node_modules on the walk-up from `extensions/`, and the jiti alias map at
- * loader.js:37-88 holds no `@tintinweb` entry. The shim depends on the `npm/` layout,
- * which is why every read of it is wrapped — a moved package degrades to
- * marker-veto-only rather than a load failure.
- */
-const CHILD_CONTEXT_SHIM = "../../npm/node_modules/@tintinweb/pi-subagents/src/child-context.js";
-
-/** A callable `inChildSessionContext`, or undefined when the shim did not load. */
-export type ChildSessionProbe = () => boolean;
-
-/**
- * Load the subagents AsyncLocalStorage reader through the relative shim.
- *
- * Returns undefined when the shim is missing, the package moved, or the module does not
- * export `inChildSessionContext`. Never throws.
- *
- * The returned function is called once per gated turn, not cached as a boolean: the ALS
- * scope is session construction, so a factory-time reading says nothing about the turn
- * the handler is judging.
- */
-export async function loadChildSessionProbe(): Promise<ChildSessionProbe | undefined> {
-  try {
-    const mod = (await import(CHILD_CONTEXT_SHIM)) as { inChildSessionContext?: () => boolean };
-    if (typeof mod.inChildSessionContext !== "function") return undefined;
-    return mod.inChildSessionContext.bind(mod);
-  } catch {
-    return undefined;
-  }
-}
-
-/**
- * Log the probe's reading at factory time.
- *
- * This is the assertion that answers the scope and identity questions at once: run pi
- * once in a main session and once inside a spawned subagent, then compare the two lines.
- * A reading of `false` inside the child means the ALS is not carrying the guard — which
- * the design already assumes — and the marker veto is doing the work alone.
- */
-export function logProbeReading(probe: ChildSessionProbe | undefined): void {
-  if (!probe) {
-    console.warn(
-      "[advisor-turn-gate] child-context shim unreachable; the marker veto is the only guard",
-    );
-    return;
-  }
-  let inChild = false;
-  try {
-    inChild = probe() === true;
-  } catch {
-    console.warn(
-      "[advisor-turn-gate] child-context probe threw; the marker veto is the only guard",
-    );
-    return;
-  }
-  console.log(`[advisor-turn-gate] ALS inChildSessionContext=${inChild} at factory time`);
-}
 
 /** The slice of a system message the veto needs. Structural, so this module imports nothing. */
 interface SystemMessageLike {

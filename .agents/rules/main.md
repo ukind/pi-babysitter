@@ -24,7 +24,7 @@ applyTo:
 
 - `index.ts` — the wiring. The only file the runtime loads.
 - `config.ts` — every tunable field, clamping, and the model-key parser.
-- `guard.ts` — child-session inertness (marker veto + ALS probe).
+- `guard.ts` — child-session inertness (marker veto).
 - `prompt.ts` — context shaping for the advisor call.
 - `advisor.ts` — the model call, deadline, and markup stripping.
 - `report.ts` — failure reporting to the TUI.

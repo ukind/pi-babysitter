@@ -5,18 +5,15 @@
  * Covers the offline-checkable Verification Notes of the original extension plan
  * (the plan artifact is not committed; the path stays as a historical label only):
  * cadence arithmetic, the accumulator spread, fail-open, the fact that completeSimple
- * never rejects, the ALS scope, the marker living in sections, marker drift, and model
- * resolution. Config clamping and prompt assembly are covered as well, but they are
+ * never rejects, the marker living in sections, marker drift, and model resolution.
+ * Config clamping and prompt assembly are covered as well, but they are
  * Requirements rather than Verification Notes entries.
  *
- * Three things are deliberately NOT asserted, because no offline assertion can
+ * Two things are deliberately NOT asserted, because no offline assertion can
  * distinguish them:
  *   - whether pi's jiti resolves the extensionless sibling imports index.ts uses. The
  *     form is proven live by simple-english/index.ts:16, but plain node cannot load
  *     index.ts at all, so this suite imports the four sibling modules directly.
- *   - whether the child-context shim resolves under jiti. Under plain node the .js
- *     specifier has no .ts fallback, so loadChildSessionProbe() always returns undefined
- *     here. The runtime assertion is the pair of factory-time log lines.
  *   - the real advisor call. Every advisor test stubs the completion facade.
  *
  * config.ts, guard.ts, prompt.ts, and advisor.ts import no sibling at runtime, so this
@@ -47,12 +44,7 @@ import {
   resetWarnOnceForTest,
   shouldGate,
 } from "../config.ts";
-import {
-  CHILD_MARKER_PATTERN,
-  isChildSession,
-  loadChildSessionProbe,
-  logProbeReading,
-} from "../guard.ts";
+import { CHILD_MARKER_PATTERN, isChildSession } from "../guard.ts";
 import {
   ADVISOR_NUDGE,
   buildAdvisorMessages,
@@ -105,21 +97,6 @@ function captureWarn(fn) {
     fn();
   } finally {
     console.warn = orig;
-  }
-  return seen;
-}
-
-function captureLog(fn) {
-  const seen = [];
-  const origLog = console.log;
-  const origWarn = console.warn;
-  console.log = (s) => seen.push(String(s));
-  console.warn = (s) => seen.push(String(s));
-  try {
-    fn();
-  } finally {
-    console.log = origLog;
-    console.warn = origWarn;
   }
   return seen;
 }
@@ -430,29 +407,6 @@ assert(
   !CHILD_MARKER_PATTERN.test("<active_agent>"),
   "t11: a tag with no name attribute is rejected",
 );
-
-// --- 12. the ALS probe degrades instead of throwing, and the log covers every shape.
-{
-  assert(
-    loadChildSessionProbe() instanceof Promise,
-    "t12: loadChildSessionProbe returns a promise",
-  );
-  const logs = captureLog(() => {
-    logProbeReading(undefined);
-    logProbeReading(() => true);
-    logProbeReading(() => false);
-    logProbeReading(() => {
-      throw new Error("boom");
-    });
-  });
-  assert(logs.length === 4, "t12: logProbeReading handles all four shapes without throwing");
-  assert(
-    logs[0].includes("shim unreachable"),
-    "t12: an absent probe warns that the veto is the only guard",
-  );
-  assert(logs[1].includes("inChildSessionContext=true"), "t12: a true reading is logged");
-  assert(logs[3].includes("probe threw"), "t12: a throwing probe is contained");
-}
 
 // --- 13. model resolution: an uncredentialed provider is skipped, not thrown.
 {
