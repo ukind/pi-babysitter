@@ -1,7 +1,7 @@
 {
   "enabled": true,
   "interval": 3,
-  "model": "",
+  "model": "stepfun/step-5-preview",
   "timeoutMs": 60000,
   "customType": "advisor-turn-gate",
   "display": true

@@ -20,6 +20,6 @@
     }
   },
   "files": {
-    "includes": ["**", "!node_modules", "!.git"]
+    "includes": ["**", "!node_modules", "!.git", "!.rpiv"]
   }
 }
