@@ -23,4 +23,5 @@ Run a senior-engineer advisor review on the current agent session transcript.
 
 ## Config
 
-Set `model` and `interval` in `config.json`. The model must be `provider/modelId`.
+All seven config fields live in `config.json`. The README documents each field with
+its default. The gate ships disabled: set `model` to `provider/modelId` to activate it.

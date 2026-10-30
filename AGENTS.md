@@ -40,7 +40,7 @@ advice as a `custom_message` entry in the durable transcript.
 ## Build and test
 
 ```
-node --experimental-strip-types test.mjs
+npm test
 ```
 
 ## License

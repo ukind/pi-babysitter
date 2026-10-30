@@ -5,9 +5,8 @@ applyTo:
 - "*.ts"
 - "*.mjs"
 - "*.md"
-  glob:
-- "src/**"
-- "test/**"
+- "tests/**"
+- "scripts/hooks/*.mjs"
 
 ---
 
@@ -29,9 +28,12 @@ applyTo:
 - `prompt.ts` — context shaping for the advisor call.
 - `advisor.ts` — the model call, deadline, and markup stripping.
 - `report.ts` — failure reporting to the TUI.
-- `test.mjs` — offline unit tests.
+- `tests/test.mjs` — offline unit tests.
+- `scripts/hooks/gate.mjs` — PreToolUse gate hook. Blocks catastrophic Bash commands.
+- `scripts/hooks/lib.mjs` — shared hook plumbing: invocation detection, stdin parse, field read.
+- `scripts/hooks/feedback.mjs` — PostToolUse hook. Runs `node --check` on edited JS and TS files.
 
 ## Tests
 
-- Run with `node --experimental-strip-types test.mjs`.
+- Run with `npm test`.
 - Every test must be deterministic. No timestamps in output.
