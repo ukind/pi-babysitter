@@ -15,8 +15,8 @@ import type { AdvisorOutcome, AdvisorResolution } from "./advisor";
  * logic of index.ts becomes testable without loading index.ts.
  *
  * Laziness is part of the contract. Every early-out returns BEFORE any thunk runs, so
- * an off-cadence turn pays for no child scan, no parse, no resolve — the exact
- * short-circuit economics of the pre-extraction index.ts.
+ * an off-cadence turn pays for no child scan, no parse, no resolve, and no mark — the
+ * exact short-circuit economics of the pre-extraction index.ts.
  */
 
 /** One committed guidance entry plus the forced continuation. */
@@ -61,12 +61,18 @@ export interface PlanGateArgs {
   turnIndex: number;
   outcome: string;
   llmMessages: Message[];
+  // The turn the gate last fired on (F007). The factory starts it at -1, so the first
+  // fire lands on turn interval - 1 (0-based) — exact parity with the modulo sequence.
+  lastFiredTurn: number;
   // Injected siblings, pre-bound at the seam. None runs past an early-out.
-  gates: (turnIndex: number, interval: number) => boolean;
+  gates: (turnIndex: number, interval: number, lastFiredTurn: number) => boolean;
   isChild: () => boolean;
   parseModel: () => { provider: string; modelId: string } | undefined;
   resolve: (provider: string, modelId: string) => AdvisorResolution;
   buildMessages: (messages: Message[]) => Message[];
+  // Invoked exactly once per gate-pass: after the completed check, before the vetoes.
+  // The seam owns the single lastFiredTurn write; this core stays pure.
+  markFired: (turnIndex: number) => void;
 }
 
 /**
@@ -75,18 +81,27 @@ export interface PlanGateArgs {
  * The arm order pins the pre-extraction semantics: disabled, no model, off cadence,
  * errored turn, child session, unparseable model — every arm silent except the
  * resolution failure, which reports through the notify arm in the exact reportFailure
- * format the old index.ts:70 produced.
+ * format the old index.ts:70 produced. The F007 mark runs at gate-pass, after the
+ * completed check and before the vetoes: an errored boundary does not spend its slot,
+ * a vetoed one does.
  */
 export function planGate(args: PlanGateArgs): GateDecision {
   if (!args.enabled) return { action: "skip", reason: "the gate is disabled" };
   if (!args.model) return { action: "skip", reason: "no model configured" };
-  // Cadence. The modulo form is required: a threshold form such as
-  // `turnIndex >= interval` latches and fires on every later turn.
-  if (!args.gates(args.turnIndex, args.interval)) {
+  // Cadence. shouldFire is the STATEFUL threshold form: it cannot latch, because
+  // lastFiredTurn advances on every fire. The anti-latch argument on shouldGate
+  // (config.ts) covers only the stateless form; t1 pins that form, t1b pins this one.
+  if (!args.gates(args.turnIndex, args.interval, args.lastFiredTurn)) {
     return { action: "skip", reason: "off cadence" };
   }
-  // An aborted or errored turn has no work worth reviewing.
+  // An aborted or errored turn has no work worth reviewing — and does not spend its
+  // slot: markFired below runs only past this check, so the next completed turn at or
+  // past the boundary fires (the F007 slide, which the modulo form would not do).
   if (args.outcome !== "completed") return { action: "skip", reason: `turn ${args.outcome}` };
+  // Gate-pass. Record the fire BEFORE the vetoes, so a vetoed boundary spends its slot
+  // and retries stay bounded to one per interval — a commit-time update would
+  // re-attempt a broken registry on every later turn.
+  args.markFired(args.turnIndex);
   // The authoritative veto.
   if (args.isChild()) return { action: "skip", reason: "child session" };
   const parsed = args.parseModel();

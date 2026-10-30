@@ -114,9 +114,11 @@ export function parseModelKey(key: string): { provider: string; modelId: string 
 /**
  * Whether the gate fires on the turn that just ended.
  *
- * The modulo form is required. A threshold form such as `turnIndex >= interval` latches:
- * once turnIndex reaches the interval it fires on EVERY later turn, so interval 2 over
- * five turns yields four advisor calls instead of two.
+ * The modulo form is required. A STATELESS threshold form such as
+ * `turnIndex >= interval` latches: once turnIndex reaches the interval it fires on EVERY
+ * later turn, so interval 2 over five turns yields four advisor calls instead of two.
+ * The qualifier matters since F007: the stateful threshold form beside this function
+ * cannot latch, because its lastFiredTurn advances on every fire.
  *
  * `turnIndex` is 0-based for the just-finished turn (agent-session.js:918 increments it
  * after the dispatch), so turn 1 reports 0 and the +1 makes the first gate land on turn
@@ -129,6 +131,27 @@ export function parseModelKey(key: string): { provider: string; modelId: string 
 export function shouldGate(turnIndex: number, interval: number): boolean {
   if (!Number.isInteger(interval) || interval < 1) return false;
   return (turnIndex + 1) % interval === 0;
+}
+
+/**
+ * Whether the gate fires on this turn, given the turn it last fired on (F007).
+ *
+ * The stateful threshold form: fire on the first COMPLETED turn at or past each
+ * boundary. lastFiredTurn starts at -1, so the first fire lands at turn interval - 1
+ * (0-based) — exact parity with shouldGate's modulo sequence. An errored boundary does
+ * not spend its slot because the seam updates lastFiredTurn only after the completed
+ * check passes, so the next completed turn at or past the boundary fires — which the
+ * modulo form would not do (the slide).
+ *
+ * It does not latch: lastFiredTurn advances only when the gate fires, so after a quiet
+ * stretch the stale threshold produces exactly one fire and cadence re-locks.
+ *
+ * Lives beside shouldGate, which stays: t1 pins the modulo sequence verbatim and t1b
+ * pins the fold parity between the two forms, so a regression in either cannot pass.
+ */
+export function shouldFire(turnIndex: number, interval: number, lastFiredTurn: number): boolean {
+  if (!Number.isInteger(interval) || interval < 1) return false;
+  return turnIndex >= lastFiredTurn + interval;
 }
 
 /**

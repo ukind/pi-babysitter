@@ -42,6 +42,7 @@ import {
   MIN_TIMEOUT_MS,
   parseModelKey,
   resetWarnOnceForTest,
+  shouldFire,
   shouldGate,
 } from "../config.ts";
 import { CHILD_MARKER_PATTERN, isChildSession } from "../guard.ts";
@@ -105,8 +106,8 @@ function captureWarn(fn) {
 const Q = String.fromCharCode(34);
 const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
 
-// --- 1. cadence: the modulo form gates once per interval; the threshold form latches.
-//        Runs first because it is pure arithmetic with no module-level latch.
+// --- 1. cadence: the modulo form gates once per interval; the STATELESS threshold form
+//        latches. Runs first because it is pure arithmetic with no module-level latch.
 {
   const seq = [0, 1, 2, 3, 4, 5, 6, 7];
   const two = seq.filter((i) => shouldGate(i, 2));
@@ -122,12 +123,86 @@ const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
   );
   assert(!shouldGate(0, 0), "t1: interval 0 never gates");
   assert(!shouldGate(0, -1), "t1: a negative interval never gates");
-  // The rejected alternative, asserted so a refactor cannot silently adopt it.
+  // The rejected alternative, asserted so a refactor cannot silently adopt it. The
+  // anti-latch argument covers only this STATELESS form: F007's shouldFire is the
+  // stateful form, which cannot latch because lastFiredTurn advances on every fire
+  // (t1b pins that parity and the slide).
   const latched = seq.filter((i) => i >= 2);
   assert(
     latched.length === 6,
-    "t1: the threshold form would latch to 6 calls, which is why it is rejected",
+    "t1: the stateless threshold form would latch to 6 calls, which is why it is rejected",
   );
+}
+
+// --- 1b. the stateful threshold (F007): shouldFire folds to shouldGate's exact sets,
+//         slides past an errored boundary, and cannot latch.
+{
+  // The fold simulator: advance the latch only on fire, mirroring the seam's markFired.
+  const fold = (seq, interval) => {
+    let last = -1;
+    return seq.filter((i) => {
+      if (!shouldFire(i, interval, last)) return false;
+      last = i;
+      return true;
+    });
+  };
+  const seq = [0, 1, 2, 3, 4, 5, 6, 7];
+  assert(fold(seq, 2).join(",") === "1,3,5,7", "t1b: interval 2 folds to t1's exact set");
+  assert(fold(seq, 3).join(",") === "2,5", "t1b: interval 3 folds to t1's exact set");
+  assert(fold(seq, 1).join(",") === "0,1,2,3,4,5,6,7", "t1b: interval 1 folds to every turn");
+  assert(!shouldFire(0, 0, -1), "t1b: interval 0 never fires");
+  assert(!shouldFire(0, -1, -1), "t1b: a negative interval never fires");
+  // No latch: after a quiet stretch the stale threshold fires once, then re-locks. The
+  // stateless form would fire on EVERY later turn instead.
+  assert(fold([0, 1, 2, 7, 8], 2).join(",") === "1,7", "t1b: a gap fires once and re-locks");
+  // Reload parity: a fresh factory restarts the latch at -1 while turnIndex keeps
+  // climbing, so the first post-reload completed turn fires early and cadence re-locks
+  // one interval later. Reload may fire early; it never skips.
+  assert(
+    fold([6, 7, 8], 2).join(",") === "6,8",
+    "t1b: a reload fires early on the next completed turn and re-locks one interval later",
+  );
+  // The slide, driven through the core so the markFired placement is pinned: an errored
+  // boundary leaves the latch alone, and the next completed turn at or past the boundary
+  // fires — which the modulo form would NOT do (modulo gates at the error's turnIndex 3
+  // and then at 5, so it would wait for 5 after the error at 3; the slide fires at 4).
+  const boundary = (overrides = {}) =>
+    planGate({
+      enabled: true,
+      model: "a/b",
+      interval: 2,
+      systemPrompt: "sp",
+      timeoutMs: 5000,
+      turnIndex: 0,
+      outcome: "completed",
+      llmMessages: [],
+      lastFiredTurn: -1,
+      gates: shouldFire,
+      isChild: () => false,
+      parseModel: () => ({ provider: "a", modelId: "b" }),
+      resolve: () => ({ ok: true, model: { provider: "a", id: "b" } }),
+      buildMessages: (messages) => messages,
+      markFired: () => {},
+      ...overrides,
+    });
+  const latch = { value: -1 };
+  let marks = 0;
+  const runTurn = (turnIndex, outcome) =>
+    boundary({
+      turnIndex,
+      outcome,
+      lastFiredTurn: latch.value,
+      markFired: (i) => {
+        marks++;
+        latch.value = i;
+      },
+    });
+  assert(runTurn(3, "error").action === "skip", "t1b: an errored boundary skips");
+  assert(marks === 0, "t1b: an errored boundary does not spend its slot");
+  const slid = runTurn(4, "completed");
+  assert(slid.action === "consult", "t1b: the next completed turn at or past the boundary fires");
+  assert(marks === 1 && latch.value === 4, "t1b: the latch advanced to the firing turn");
+  assert(runTurn(5, "completed").action === "skip", "t1b: cadence re-locks after the slide");
 }
 
 // --- 2. missing config file: silent, defaults. The ENOENT path never reaches the
@@ -313,21 +388,33 @@ const gateArgs = (overrides = {}) => ({
   turnIndex: 1,
   outcome: "completed",
   llmMessages: [{ role: "user", content: [{ type: "text", text: "work" }], timestamp: 1 }],
-  gates: () => true,
+  lastFiredTurn: -1,
+  gates: shouldFire,
   isChild: () => false,
   parseModel: () => ({ provider: "anthropic", modelId: "claude-sonnet-4-5" }),
   resolve: () => ({ ok: true, model: { provider: "anthropic", id: "claude-sonnet-4-5" } }),
   buildMessages: (messages) => messages,
+  markFired: () => {},
   ...overrides,
 });
 {
   // Laziness. The cadence thunk runs; nothing behind it does.
-  const calls = { gates: 0, isChild: 0, parseModel: 0, resolve: 0, buildMessages: 0 };
+  const calls = {
+    gates: 0,
+    markFired: 0,
+    isChild: 0,
+    parseModel: 0,
+    resolve: 0,
+    buildMessages: 0,
+  };
   const decision = planGate(
     gateArgs({
       gates: () => {
         calls.gates++;
         return false;
+      },
+      markFired: () => {
+        calls.markFired++;
       },
       isChild: () => {
         calls.isChild++;
@@ -349,10 +436,9 @@ const gateArgs = (overrides = {}) => ({
   );
   assert(decision.action === "skip", "t9: an off-cadence turn skips");
   assert(calls.gates === 1, "t9: the cadence thunk runs exactly once");
-  assert(
-    calls.isChild + calls.parseModel + calls.resolve + calls.buildMessages === 0,
-    "t9: an off-cadence turn invokes no other thunk (laziness preserved)",
-  );
+  const behind =
+    calls.markFired + calls.isChild + calls.parseModel + calls.resolve + calls.buildMessages;
+  assert(behind === 0, "t9: an off-cadence turn invokes no other thunk (laziness preserved)");
 }
 {
   // The silent top early-outs, and the order: cadence precedes the outcome check, the
@@ -362,13 +448,16 @@ const gateArgs = (overrides = {}) => ({
     planGate(gateArgs({ model: "" })).action === "skip",
     "t9: an empty model skips before any thunk",
   );
-  const calls = { gates: 0, isChild: 0 };
+  const calls = { gates: 0, markFired: 0, isChild: 0 };
   const errored = planGate(
     gateArgs({
       outcome: "error",
       gates: () => {
         calls.gates++;
         return true;
+      },
+      markFired: () => {
+        calls.markFired++;
       },
       isChild: () => {
         calls.isChild++;
@@ -378,15 +467,24 @@ const gateArgs = (overrides = {}) => ({
   );
   assert(errored.action === "skip", "t9: an errored boundary skips");
   assert(calls.gates === 1 && calls.isChild === 0, "t9: cadence precedes the outcome check");
+  assert(calls.markFired === 0, "t9: an errored boundary does not spend its slot (the F007 slide)");
+  const marks = [];
   const vetoed = planGate(
     gateArgs({
       isChild: () => true,
       parseModel: () => {
         throw new Error("parse must not run past the veto");
       },
+      markFired: (i) => {
+        marks.push(i);
+      },
     }),
   );
   assert(vetoed.action === "skip", "t9: a child session skips before parse and resolve");
+  assert(
+    marks.join(",") === "1",
+    "t9: the mark runs before the veto — a vetoed boundary spends its slot",
+  );
 }
 {
   // The parse arm fails open SILENTLY — a skip, never a notify (pins index.ts:65-66).
@@ -436,17 +534,18 @@ const gateArgs = (overrides = {}) => ({
 // No lone block around the real-cadence asserts: they declare nothing, and biome rejects
 // a declaration-free lone block (noUselessLoneBlockStatements).
 // The real cadence predicate rides the seam: t1's interval sets, replayed through
-// the core, so a seam that drops or inverts turnIndex cannot pass silently.
+// the core against shouldFire, so a seam that drops or inverts turnIndex or
+// lastFiredTurn cannot pass silently.
 assert(
-  planGate(gateArgs({ interval: 0, gates: shouldGate })).action === "skip",
+  planGate(gateArgs({ interval: 0 })).action === "skip",
   "t9: interval 0 never consults through the real cadence",
 );
 assert(
-  planGate(gateArgs({ turnIndex: 1, interval: 2, gates: shouldGate })).action === "consult",
+  planGate(gateArgs({ turnIndex: 1, interval: 2 })).action === "consult",
   "t9: interval 2 consults on turnIndex 1 through the real cadence",
 );
 assert(
-  planGate(gateArgs({ turnIndex: 0, interval: 2, gates: shouldGate })).action === "skip",
+  planGate(gateArgs({ turnIndex: 0, interval: 2 })).action === "skip",
   "t9: interval 2 skips turnIndex 0 through the real cadence",
 );
 {

@@ -1,6 +1,6 @@
 import type { BoundaryResult, ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { resolveAdvisorModel, runAdvisor, stripAdvisorMarkup } from "./advisor";
-import { loadConfig, parseModelKey, shouldGate } from "./config";
+import { loadConfig, parseModelKey, shouldFire } from "./config";
 import { isChildSession } from "./guard";
 import { planCommit, planGate } from "./plan-turn";
 import { buildAdvisorMessages } from "./prompt";
@@ -24,6 +24,13 @@ import { reportFailure } from "./report";
  */
 
 export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
+  // F007: the cadence latch lives in the factory closure, so the seam owns the single
+  // write and the pure core stays pure. A pi reload re-runs this factory while
+  // turnIndex keeps climbing: the reset latch puts the threshold in the past, so the
+  // next completed turn fires EARLY (up to interval-1 turns) and cadence re-locks
+  // after that one fire. Reload may fire early; it never skips.
+  let lastFiredTurn = -1;
+
   pi.on("turn_end", async (event, ctx): Promise<BoundaryResult | undefined> => {
     // Config is read per dispatch, not once at factory time, so interval and model
     // can be retuned without a reload.
@@ -31,7 +38,7 @@ export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
 
     // The decision cores are pure (plan-turn.ts); this handler owns I/O only. The
     // thunks keep the pre-extraction laziness: planGate runs none of them past an
-    // early-out, so an off-cadence turn pays for no scan, parse, or resolve.
+    // early-out, so an off-cadence turn pays for no scan, parse, resolve, or mark.
     const gate = planGate({
       enabled: config.enabled,
       model: config.model,
@@ -41,11 +48,18 @@ export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
       turnIndex: event.turnIndex,
       outcome: event.outcome,
       llmMessages: event.context.llmMessages,
-      gates: shouldGate,
+      lastFiredTurn,
+      gates: shouldFire,
       isChild: () => isChildSession(event.context.llmMessages),
       parseModel: () => parseModelKey(config.model),
       resolve: (provider, modelId) => resolveAdvisorModel(ctx.modelRegistry, provider, modelId),
       buildMessages: buildAdvisorMessages,
+      // The single lastFiredTurn write in the codebase. planGate invokes this at
+      // gate-pass — after the completed check, before the vetoes — so an errored
+      // boundary does not spend its slot and a vetoed one does.
+      markFired: (turnIndex) => {
+        lastFiredTurn = turnIndex;
+      },
     });
     if (gate.action === "skip") return;
     if (gate.action === "notify") {
