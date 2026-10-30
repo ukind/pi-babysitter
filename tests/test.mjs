@@ -13,12 +13,12 @@
  * distinguish them:
  *   - whether pi's jiti resolves the extensionless sibling imports index.ts uses. The
  *     form is proven live by simple-english/index.ts:16, but plain node cannot load
- *     index.ts at all, so this suite imports the four sibling modules directly.
+ *     index.ts at all, so this suite imports the six sibling modules directly.
  *   - the real advisor call. Every advisor test stubs the completion facade.
  *
- * config.ts, guard.ts, prompt.ts, and advisor.ts import no sibling at runtime, so this
- * file resolves nothing from @earendil-works/* — a MODULE_NOT_FOUND here means a runtime
- * import leaked into one of them.
+ * config.ts, guard.ts, prompt.ts, advisor.ts, report.ts, and plan-turn.ts import no
+ * sibling at runtime, so this file resolves nothing from @earendil-works/* — a
+ * MODULE_NOT_FOUND here means a runtime import leaked into one of them.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -45,6 +45,7 @@ import {
   shouldGate,
 } from "../config.ts";
 import { CHILD_MARKER_PATTERN, isChildSession } from "../guard.ts";
+import { buildCorrection, planCommit, planGate } from "../plan-turn.ts";
 import {
   ADVISOR_NUDGE,
   buildAdvisorMessages,
@@ -299,24 +300,208 @@ assert(parseModelKey("a:b/c").modelId === "c", "t8: slash wins when both separat
 assert(parseModelKey("gpt-4") === undefined, "t8: no separator returns undefined");
 assert(parseModelKey("/b") === undefined, "t8: a leading separator returns undefined");
 
-// --- 9. the accumulator spread. The negative case is the one that matters: a bare array
-//        drops every peer draft, because emitBoundary REPLACES the accumulator.
+// --- 9. plan-turn.ts: the extracted decision cores. The early-outs must keep the exact
+//        order and laziness of the pre-extraction index.ts — an off-cadence turn invokes
+//        no thunk at all — and the notify arms must carry the exact reportFailure
+//        formats, so the seam can stay a dumb dispatcher.
+const gateArgs = (overrides = {}) => ({
+  enabled: true,
+  model: "anthropic/claude-sonnet-4-5",
+  interval: 2,
+  systemPrompt: "sp",
+  timeoutMs: 5000,
+  turnIndex: 1,
+  outcome: "completed",
+  llmMessages: [{ role: "user", content: [{ type: "text", text: "work" }], timestamp: 1 }],
+  gates: () => true,
+  isChild: () => false,
+  parseModel: () => ({ provider: "anthropic", modelId: "claude-sonnet-4-5" }),
+  resolve: () => ({ ok: true, model: { provider: "anthropic", id: "claude-sonnet-4-5" } }),
+  buildMessages: (messages) => messages,
+  ...overrides,
+});
 {
+  // Laziness. The cadence thunk runs; nothing behind it does.
+  const calls = { gates: 0, isChild: 0, parseModel: 0, resolve: 0, buildMessages: 0 };
+  const decision = planGate(
+    gateArgs({
+      gates: () => {
+        calls.gates++;
+        return false;
+      },
+      isChild: () => {
+        calls.isChild++;
+        return true;
+      },
+      parseModel: () => {
+        calls.parseModel++;
+        return undefined;
+      },
+      resolve: () => {
+        calls.resolve++;
+        return { ok: false, reason: "unused" };
+      },
+      buildMessages: (messages) => {
+        calls.buildMessages++;
+        return messages;
+      },
+    }),
+  );
+  assert(decision.action === "skip", "t9: an off-cadence turn skips");
+  assert(calls.gates === 1, "t9: the cadence thunk runs exactly once");
+  assert(
+    calls.isChild + calls.parseModel + calls.resolve + calls.buildMessages === 0,
+    "t9: an off-cadence turn invokes no other thunk (laziness preserved)",
+  );
+}
+{
+  // The silent top early-outs, and the order: cadence precedes the outcome check, the
+  // outcome check precedes the child veto, and the veto precedes parse and resolve.
+  assert(planGate(gateArgs({ enabled: false })).action === "skip", "t9: a disabled gate skips");
+  assert(
+    planGate(gateArgs({ model: "" })).action === "skip",
+    "t9: an empty model skips before any thunk",
+  );
+  const calls = { gates: 0, isChild: 0 };
+  const errored = planGate(
+    gateArgs({
+      outcome: "error",
+      gates: () => {
+        calls.gates++;
+        return true;
+      },
+      isChild: () => {
+        calls.isChild++;
+        return true;
+      },
+    }),
+  );
+  assert(errored.action === "skip", "t9: an errored boundary skips");
+  assert(calls.gates === 1 && calls.isChild === 0, "t9: cadence precedes the outcome check");
+  const vetoed = planGate(
+    gateArgs({
+      isChild: () => true,
+      parseModel: () => {
+        throw new Error("parse must not run past the veto");
+      },
+    }),
+  );
+  assert(vetoed.action === "skip", "t9: a child session skips before parse and resolve");
+}
+{
+  // The parse arm fails open SILENTLY — a skip, never a notify (pins index.ts:65-66).
+  const decision = planGate(gateArgs({ parseModel: () => undefined }));
+  assert(decision.action === "skip", "t9: an unparseable model skips");
+  assert(!("message" in decision), "t9: the parse arm reports nothing");
+}
+{
+  // The one notify arm in planGate: the exact reportFailure format the old :70 built.
+  const decision = planGate(
+    gateArgs({
+      resolve: () => ({ ok: false, reason: 'provider "anthropic" has no credentials' }),
+    }),
+  );
+  assert(
+    decision.action === "notify" &&
+      decision.message === 'advisor-turn-gate: provider "anthropic" has no credentials',
+    "t9: a resolution failure notifies in the exact report format",
+  );
+}
+{
+  // The consult arm: the complete request shape, built inside the core, exactly once.
+  const llm = [{ role: "user", content: [{ type: "text", text: "work" }], timestamp: 1 }];
+  const shaped = [{ role: "user", content: [{ type: "text", text: "shaped" }], timestamp: 2 }];
+  const model = { provider: "anthropic", id: "claude-sonnet-4-5" };
+  let built = 0;
+  const decision = planGate(
+    gateArgs({
+      llmMessages: llm,
+      systemPrompt: "the prompt",
+      timeoutMs: 4321,
+      resolve: () => ({ ok: true, model }),
+      buildMessages: (messages) => {
+        built++;
+        assert(messages === llm, "t9: buildMessages receives the raw context");
+        return shaped;
+      },
+    }),
+  );
+  assert(decision.action === "consult", "t9: the happy path consults");
+  assert(decision.model === model, "t9: the resolved model rides through");
+  assert(decision.systemPrompt === "the prompt", "t9: the system prompt rides through");
+  assert(decision.messages === shaped, "t9: the messages are the shaped context");
+  assert(decision.timeoutMs === 4321, "t9: the timeout rides through");
+  assert(built === 1, "t9: buildMessages runs exactly once, inside the core");
+}
+// No lone block around the real-cadence asserts: they declare nothing, and biome rejects
+// a declaration-free lone block (noUselessLoneBlockStatements).
+// The real cadence predicate rides the seam: t1's interval sets, replayed through
+// the core, so a seam that drops or inverts turnIndex cannot pass silently.
+assert(
+  planGate(gateArgs({ interval: 0, gates: shouldGate })).action === "skip",
+  "t9: interval 0 never consults through the real cadence",
+);
+assert(
+  planGate(gateArgs({ turnIndex: 1, interval: 2, gates: shouldGate })).action === "consult",
+  "t9: interval 2 consults on turnIndex 1 through the real cadence",
+);
+assert(
+  planGate(gateArgs({ turnIndex: 0, interval: 2, gates: shouldGate })).action === "skip",
+  "t9: interval 2 skips turnIndex 0 through the real cadence",
+);
+{
+  // planCommit: both failure arms notify in the exact old formats (:84 and :93).
+  const failed = planCommit({
+    outcome: { ok: false, reason: "advisor stopped with error" },
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: [],
+    strip: (text) => text,
+  });
+  assert(
+    failed.action === "notify" &&
+      failed.message === "advisor-turn-gate: advisor stopped with error",
+    "t9: an advisor error notifies in the exact report format",
+  );
+  const husk = planCommit({
+    outcome: { ok: true, text: "<tool_call>x</tool_call>" },
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: [],
+    strip: () => "",
+  });
+  assert(
+    husk.action === "notify" && husk.message === "advisor-turn-gate: advisor reply was markup only",
+    "t9: a markup-only reply notifies in the exact husk format",
+  );
+}
+{
+  // The commit arm: the accumulator spread, asserted against the REAL buildCorrection
+  // instead of the inline re-implementation this banner used to carry.
   const peers = [
     { type: "custom", customType: "peer-a" },
     { type: "custom", customType: "peer-b" },
   ];
-  const draft = {
-    type: "custom_message",
+  const committed = planCommit({
+    outcome: { ok: true, text: "guidance" },
     customType: "advisor-turn-gate",
-    content: "guidance",
     display: false,
-  };
-  const spread = { entries: [...peers, draft], continue: true };
-  assert(spread.entries.length === 3, "t9: the spread keeps both peer drafts");
-  assert(spread.entries[0].customType === "peer-a", "t9: peer order is preserved");
-  assert(spread.continue === true, "t9: continue survives the spread");
-  const bare = { entries: [draft], continue: true };
+    peerEntries: peers,
+    strip: (text) => text,
+  });
+  assert(committed.action === "commit", "t9: a clean reply commits");
+  assert(committed.result.entries.length === 3, "t9: the spread keeps both peer drafts");
+  assert(committed.result.entries[0].customType === "peer-a", "t9: peer order is preserved");
+  assert(
+    committed.result.entries[2].type === "custom_message",
+    "t9: the guidance draft rides last",
+  );
+  assert(committed.result.continue === true, "t9: continue survives the spread");
+  // The never-tested branch: undefined peerEntries degrades to a lone draft, not a crash.
+  const noPeers = buildCorrection("advisor-turn-gate", "text", true, undefined);
+  assert(noPeers.entries.length === 1, "t9: undefined peerEntries degrades to a lone draft");
+  // The rejected alternative, kept as documentation: a bare array drops every peer draft.
+  const bare = { entries: [{ type: "custom_message" }], continue: true };
   assert(
     bare.entries.length === 1,
     "t9: a bare array would drop both peers — the bug the spread prevents",

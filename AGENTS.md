@@ -15,6 +15,7 @@ advice as a `custom_message` entry in the durable transcript.
 ## Files
 
 - `index.ts` — the wiring. The only file the runtime loads.
+- `plan-turn.ts` — the pure turn_end decision cores. No runtime imports.
 - `config.ts` — every tunable field, clamping, and the model-key parser.
 - `guard.ts` — child-session inertness (marker veto).
 - `prompt.ts` — context shaping for the advisor call.
