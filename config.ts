@@ -55,9 +55,37 @@ function warnOnce(message: string): void {
   console.warn(message);
 }
 
+/**
+ * Re-arm the warn-once latch. Test-only surface: the suite's withConfig() calls this at
+ * entry, so every fixture window starts fresh and the config tests carry no ordering
+ * constraint. Production never re-arms a warning: one notice per process is the contract.
+ */
+export function resetWarnOnceForTest(): void {
+  configWarned = false;
+}
+
 function clampInt(value: number, min: number, max: number): number {
   if (!Number.isFinite(value)) return min;
   return Math.min(max, Math.max(min, Math.trunc(value)));
+}
+
+/**
+ * Clamp a config field and warn once when the value moved.
+ *
+ * Range clamping (9999 -> 100) and truncation (2.7 -> 2) arrive through the same door,
+ * so the wording names both. The shared latch caps a multi-field read at one warning.
+ * The warning is load-bearing even when the clamped value equals the default: the
+ * default timeoutMs equals MAX_TIMEOUT_MS, so for that field the warning is the only
+ * observable difference between "field absent" and "field clamped to the default".
+ */
+function clampWithWarn(fieldName: string, value: number, min: number, max: number): number {
+  const clamped = clampInt(value, min, max);
+  if (clamped !== value) {
+    warnOnce(
+      `[advisor-turn-gate] config.json ${fieldName} ${value} was clamped or truncated to ${clamped} (allowed ${min} to ${max})`,
+    );
+  }
+  return clamped;
 }
 
 /**
@@ -103,11 +131,6 @@ export function shouldGate(turnIndex: number, interval: number): boolean {
   return (turnIndex + 1) % interval === 0;
 }
 
-/** Compose the canonical "provider/modelId" string. */
-export function modelKey(model: { provider: string; id: string }): string {
-  return `${model.provider}/${model.id}`;
-}
-
 /**
  * Read config.json beside this module.
  *
@@ -135,12 +158,12 @@ export function loadConfig(): AdvisorGateConfig {
       enabled: typeof parsed.enabled === "boolean" ? parsed.enabled : DEFAULT_CONFIG.enabled,
       interval:
         typeof parsed.interval === "number"
-          ? clampInt(parsed.interval, MIN_INTERVAL, MAX_INTERVAL)
+          ? clampWithWarn("interval", parsed.interval, MIN_INTERVAL, MAX_INTERVAL)
           : DEFAULT_CONFIG.interval,
       model: model && parseModelKey(model) ? model : "",
       timeoutMs:
         typeof parsed.timeoutMs === "number"
-          ? clampInt(parsed.timeoutMs, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
+          ? clampWithWarn("timeoutMs", parsed.timeoutMs, MIN_TIMEOUT_MS, MAX_TIMEOUT_MS)
           : DEFAULT_CONFIG.timeoutMs,
       systemPrompt:
         typeof parsed.systemPrompt === "string" && parsed.systemPrompt.trim()

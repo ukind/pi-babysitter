@@ -43,8 +43,8 @@ import {
   MAX_TIMEOUT_MS,
   MIN_INTERVAL,
   MIN_TIMEOUT_MS,
-  modelKey,
   parseModelKey,
+  resetWarnOnceForTest,
   shouldGate,
 } from "../config.ts";
 import {
@@ -84,6 +84,9 @@ process.on("exit", () => {
  */
 const realHref = CONFIG_URL.href;
 function withConfig(text, fn) {
+  // F002: re-arm the warn-once latch so every fixture window starts fresh and the
+  // config tests carry no cross-test ordering constraint.
+  resetWarnOnceForTest();
   const file = join(tmpRoot, "config-under-test.json");
   writeFileSync(file, text);
   CONFIG_URL.href = pathToFileURL(file).href;
@@ -149,49 +152,75 @@ const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
   );
 }
 
-// --- 2. missing config file: silent, defaults. Runs BEFORE t3 because configWarned is a
-//        module-level latch — a warn here would make t3 vacuous.
+// --- 2. missing config file: silent, defaults. The ENOENT path never reaches the
+//        warn-once latch, so no ordering constraint applies (F002).
 CONFIG_URL.href = pathToFileURL(join(tmpRoot, "does-not-exist.json")).href;
 const missingWarns = captureWarn(() => loadConfig());
 CONFIG_URL.href = realHref;
 assert(missingWarns.length === 0, "t2: missing config.json warns nothing");
-// Deliberately NO second loadConfig() here. configWarned is a module-level latch with no
-// reset, so an unguarded call against a broken shipped config.json would latch it and
-// make t3, t4, and t6 vacuous. The defaults path is covered by t3 and t5 instead.
 const missingCfg = captureWarn(() => loadConfig());
 assert(missingCfg.length === 0, "t2: a second read of the missing file still warns nothing");
 
 // --- 3. malformed config: defaults + warns ONCE across two calls (the latch).
-const malformedWarns = captureWarn(() => {
-  const first = withConfig("{ not json", () => loadConfig());
-  const second = withConfig("{ not json", () => loadConfig());
-  assert(first.interval === DEFAULT_CONFIG.interval, "t3: malformed config falls back to defaults");
-  assert(second.interval === DEFAULT_CONFIG.interval, "t3: second call still falls back");
-});
+//        Both reads share ONE withConfig window: withConfig re-arms the latch at entry,
+//        so two windows would produce two warns and prove nothing.
+const malformedWarns = captureWarn(() =>
+  withConfig("{ not json", () => {
+    const first = loadConfig();
+    assert(
+      first.interval === DEFAULT_CONFIG.interval,
+      "t3: malformed config falls back to defaults",
+    );
+    const second = loadConfig();
+    assert(second.interval === DEFAULT_CONFIG.interval, "t3: second call still falls back");
+  }),
+);
 assert(
   malformedWarns.length === 1,
-  "t3: malformed config warns once per process, not once per turn",
+  "t3: malformed config warns once across two reads in one window",
 );
 
-// --- 4. a non-object JSON body degrades the same way. The warning count is 0, not 1,
-//        because configWarned is a process-wide latch that t3 already tripped — that is
-//        the intended "warn once per process, not once per turn" behavior.
+// --- 4. a non-object JSON body degrades the same way. withConfig re-arms the latch at
+//        entry, so the array case warns once in its own fresh window (the F002 flip
+//        from the old order-dependent 0).
 const arrayWarns = captureWarn(() => withConfig("[1,2,3]", () => loadConfig()));
-assert(
-  arrayWarns.length === 0,
-  "t4: the latch suppresses a second warning (warn once per process)",
-);
+assert(arrayWarns.length === 1, "t4: a JSON array warns once in a fresh window");
 const arrayCfg = withConfig("[1,2,3]", () => loadConfig());
 assert(
   arrayCfg.interval === DEFAULT_CONFIG.interval,
   "t4: a JSON array still falls back to defaults",
 );
 
-// --- 5. out-of-range numbers clamp instead of throwing.
+// --- 4b. resetWarnOnceForTest re-arms the latch (the F002 affordance). withConfig
+//         already re-arms at entry, so this proves the export directly with no window.
 {
-  const low = withConfig(JSON.stringify({ interval: 0, timeoutMs: 5 }), () => loadConfig());
-  assert(low.interval === MIN_INTERVAL, `t5: interval 0 clamps up to ${MIN_INTERVAL}`);
-  assert(low.timeoutMs === MIN_TIMEOUT_MS, `t5: timeoutMs 5 clamps up to ${MIN_TIMEOUT_MS}`);
+  const file = join(tmpRoot, "config-under-test.json");
+  writeFileSync(file, "[1,2,3]");
+  CONFIG_URL.href = pathToFileURL(file).href;
+  resetWarnOnceForTest();
+  const armed = captureWarn(() => loadConfig());
+  assert(armed.length === 1, "t4b: after a reset the latch lets the warn through");
+  const suppressed = captureWarn(() => loadConfig());
+  assert(suppressed.length === 0, "t4b: the re-tripped latch suppresses the next read");
+  resetWarnOnceForTest();
+  const reArmed = captureWarn(() => loadConfig());
+  assert(reArmed.length === 1, "t4b: resetWarnOnceForTest re-arms the latch again");
+  CONFIG_URL.href = realHref;
+}
+
+// --- 5. out-of-range numbers clamp instead of throwing, and every clamp or truncation
+//        warns once through the shared latch (F014). A wrong-typed field never reaches
+//        the clamp and stays silent.
+{
+  const lowWarns = captureWarn(() => {
+    const low = withConfig(JSON.stringify({ interval: 0, timeoutMs: 5 }), () => loadConfig());
+    assert(low.interval === MIN_INTERVAL, `t5: interval 0 clamps up to ${MIN_INTERVAL}`);
+    assert(low.timeoutMs === MIN_TIMEOUT_MS, `t5: timeoutMs 5 clamps up to ${MIN_TIMEOUT_MS}`);
+  });
+  assert(
+    lowWarns.length === 1,
+    "t5: two clamped fields in one call share the latch — 1 warn, not 2",
+  );
   const high = withConfig(JSON.stringify({ interval: 9999, timeoutMs: 9999999 }), () =>
     loadConfig(),
   );
@@ -200,24 +229,50 @@ assert(
     high.timeoutMs === MAX_TIMEOUT_MS,
     `t5: timeoutMs 9999999 clamps down to ${MAX_TIMEOUT_MS}`,
   );
-  const fractional = withConfig(JSON.stringify({ interval: 2.7 }), () => loadConfig());
-  assert(fractional.interval === 2, "t5: a fractional interval truncates rather than throwing");
+  const truncWarns = captureWarn(() => {
+    const fractional = withConfig(JSON.stringify({ interval: 2.7 }), () => loadConfig());
+    assert(fractional.interval === 2, "t5: a fractional interval truncates rather than throwing");
+  });
+  assert(truncWarns.length === 1, "t5: truncation warns through the same clamp door");
+  // The F014 crux: the default timeoutMs equals MAX_TIMEOUT_MS, so the clamp warn is the
+  // only observable difference between "field absent" and "field clamped to default".
+  const maxedWarns = captureWarn(() => {
+    const maxed = withConfig(JSON.stringify({ timeoutMs: 99999999 }), () => loadConfig());
+    assert(
+      maxed.timeoutMs === DEFAULT_CONFIG.timeoutMs,
+      "t5: an over-max timeoutMs lands on the default value",
+    );
+  });
+  assert(maxedWarns.length === 1, "t5: clamped-to-default stays observable through the warn");
+  // JSON has no Infinity literal; 1e999 parses to Infinity.
+  const infiniteWarns = captureWarn(() => {
+    const infinite = withConfig('{"interval": 1e999}', () => loadConfig());
+    assert(infinite.interval === MIN_INTERVAL, "t5: an infinite interval clamps to the minimum");
+  });
+  assert(infiniteWarns.length === 1, "t5: an infinite interval warns like a clamp");
   const notANumber = withConfig(JSON.stringify({ interval: "two" }), () => loadConfig());
   assert(
     notANumber.interval === DEFAULT_CONFIG.interval,
     "t5: a non-numeric interval falls back to the default",
   );
+  const wrongTypeWarns = captureWarn(() =>
+    withConfig(JSON.stringify({ interval: "two" }), () => loadConfig()),
+  );
+  assert(
+    wrongTypeWarns.length === 0,
+    "t5: a wrong-typed field never reaches the clamp and warns nothing",
+  );
 }
 
 // --- 6. an unparseable model is dropped with a warning; a parseable one survives.
 {
-  const warns = captureWarn(() => {
-    const bad = withConfig(JSON.stringify({ model: "gpt-4" }), () => loadConfig());
-    assert(bad.model === "", "t6: a model with no provider separator is dropped");
-  });
-  assert(warns.length === 0, "t6: the latch suppresses a second warning (warn once per process)");
-  const badModel = withConfig(JSON.stringify({ model: "gpt-4" }), () => loadConfig());
-  assert(badModel.model === "", "t6: the unparseable model is still dropped");
+  const warns = captureWarn(() =>
+    withConfig(JSON.stringify({ model: "gpt-4" }), () => {
+      assert(loadConfig().model === "", "t6: a model with no provider separator is dropped");
+      assert(loadConfig().model === "", "t6: the unparseable model is still dropped");
+    }),
+  );
+  assert(warns.length === 1, "t6: two reads in one window warn once (the shared latch)");
   const good = withConfig(JSON.stringify({ model: "anthropic/claude-sonnet-4-5" }), () =>
     loadConfig(),
   );
@@ -254,7 +309,7 @@ assert(/no tools/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default forb
 assert(/text only/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default demands text only");
 assert(DEFAULT_CONFIG.display === true, "t7b: the display code default is true");
 
-// --- 8. the model-key codec: slash wins, colon is legacy, neither is undefined.
+// --- 8. the model-key parser: slash wins, colon is legacy, neither is undefined.
 assert(
   parseModelKey("a/b").provider === "a" && parseModelKey("a/b").modelId === "b",
   "t8: slash splits",
@@ -266,7 +321,6 @@ assert(
 assert(parseModelKey("a:b/c").modelId === "c", "t8: slash wins when both separators are present");
 assert(parseModelKey("gpt-4") === undefined, "t8: no separator returns undefined");
 assert(parseModelKey("/b") === undefined, "t8: a leading separator returns undefined");
-assert(modelKey({ provider: "a", id: "b" }) === "a/b", "t8: modelKey composes the canonical form");
 
 // --- 9. the accumulator spread. The negative case is the one that matters: a bare array
 //        drops every peer draft, because emitBoundary REPLACES the accumulator.

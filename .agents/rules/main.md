@@ -23,7 +23,7 @@ applyTo:
 ## Files
 
 - `index.ts` — the wiring. The only file the runtime loads.
-- `config.ts` — every tunable field, clamping, and the model-key codec.
+- `config.ts` — every tunable field, clamping, and the model-key parser.
 - `guard.ts` — child-session inertness (marker veto + ALS probe).
 - `prompt.ts` — context shaping for the advisor call.
 - `advisor.ts` — the model call, deadline, and markup stripping.
