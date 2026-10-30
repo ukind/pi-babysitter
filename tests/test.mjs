@@ -690,6 +690,42 @@ for (const [name, response, check] of runCases) {
   process.removeListener("unhandledRejection", onUnhandled);
   assert(!unhandled, "t16: a rejection after the deadline does not produce an unhandled rejection");
 }
+{
+  // A call implementation that throws SYNCHRONOUSLY must not leak the deadline timer. The
+  // pending assignment and its .catch sit inside callWithDeadline's try (F001), so the
+  // finally clears the timer and the throw reaches runAdvisor's backstop as a usable
+  // fail-open reason. On the regressed shape the throw skips the finally, the timer
+  // survives, and at +timeoutMs the timeout promise rejects with no handler — which this
+  // listener observes, and which would otherwise crash the suite several green-looking
+  // tests later (the exit handler prints from process.exitCode, so a crash can even
+  // masquerade as a pass).
+  const keep = setInterval(() => {}, 500);
+  const syncThrow = () => {
+    throw new Error("sync boom");
+  };
+  let unhandled = null;
+  const onUnhandled = (err) => {
+    unhandled = err;
+  };
+  process.on("unhandledRejection", onUnhandled);
+  let outcome = null;
+  try {
+    outcome = await callWithDeadline(syncThrow, 50);
+  } catch (err) {
+    outcome = err;
+  }
+  await new Promise((r) => setTimeout(r, 250));
+  clearInterval(keep);
+  process.removeListener("unhandledRejection", onUnhandled);
+  assert(
+    outcome instanceof Error && /sync boom/.test(outcome.message),
+    "t16b: a synchronously throwing call rejects with the throw itself, not a timeout",
+  );
+  assert(
+    unhandled === null,
+    "t16b: a synchronous throw leaks no timer and produces no unhandled rejection",
+  );
+}
 
 // --- 17. callWithDeadline forwards an external abort and clears its timer.
 {

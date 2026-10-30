@@ -230,11 +230,17 @@ export async function callWithDeadline<T>(
       reject(new Error(`advisor call timed out after ${timeoutMs}ms`));
     }, timeoutMs);
   });
-  // The losing branch must not produce an unhandled rejection: a call that fails after
-  // the deadline already won would otherwise crash the process.
-  const pending = call(controller.signal);
-  pending.catch(() => {});
   try {
+    // The pending assignment sits INSIDE the try: a call implementation that throws
+    // synchronously must reach the finally below, or the deliberately-not-unref'd timer
+    // stays alive and rejects at +timeoutMs with no handler — a process crash up to a
+    // full budget after the throw (F001). A throwing call creates no pending, so there
+    // is no second failure path: the throw propagates to runAdvisor's backstop and the
+    // turn still fails open, now with the timer cleared on the way out.
+    const pending = call(controller.signal);
+    // The losing branch must not produce an unhandled rejection: a call that fails after
+    // the deadline already won would otherwise crash the process.
+    pending.catch(() => {});
     return await Promise.race([pending, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
@@ -283,6 +289,11 @@ export async function runAdvisor(params: {
   timeoutMs: number;
   signal?: AbortSignal;
 }): Promise<AdvisorOutcome> {
+  // This guard stays BEFORE the try: it is a fail-fast precondition, not a transport
+  // failure for the deadline machinery to own. t16 pins the exact reason string, and the
+  // host reports it only when a session has a UI (report.ts:30-37), so the guard's
+  // position is load-bearing documentation: a refactor that pulls it inside the try
+  // couples a missing facade to a catch widened for transport failures (F008).
   const completeSimple = getRuntimeCompleteSimple(params.registry);
   if (!completeSimple) {
     return { ok: false, reason: "no auth-aware completion facade on this host" };
