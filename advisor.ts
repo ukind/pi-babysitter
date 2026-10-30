@@ -320,7 +320,7 @@ export async function runAdvisor(params: {
     if (response.stopReason !== "stop") {
       return {
         ok: false,
-        reason: response.errorMessage ?? `advisor stopped with ${response.stopReason}`,
+        reason: response.errorMessage || `advisor stopped with ${response.stopReason}`,
       };
     }
     const text = extractAdvisorText(response);

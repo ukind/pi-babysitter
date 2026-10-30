@@ -841,6 +841,11 @@ const runCases = [
     (o) => !o.ok && /Provider is not configured/.test(o.reason),
   ],
   [
+    "empty errorMessage falls back",
+    { stopReason: "error", errorMessage: "", content: [] },
+    (o) => !o.ok && o.reason === "advisor stopped with error",
+  ],
+  [
     "aborted surfaces the stop reason",
     { stopReason: "aborted", content: [] },
     (o) => !o.ok && /advisor stopped with aborted/.test(o.reason),
