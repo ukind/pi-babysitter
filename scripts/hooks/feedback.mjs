@@ -7,7 +7,10 @@
  * reports, it never blocks. Node 22.6 or newer parses TypeScript in check
  * mode, so .ts files get real syntax feedback.
  *
- * Requires Node.js 22.6 or newer.
+ * Requires Node.js 22.6 or newer. The floor is enforced at install time:
+ * package.json declares engines ">=22.6.0" and .npmrc sets engine-strict,
+ * so an older Node fails npm install instead of failing at first hook run
+ * (F013).
  */
 
 import { spawnSync } from "node:child_process";

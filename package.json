@@ -5,6 +5,9 @@
   "type": "module",
   "private": true,
   "license": "MIT",
+  "engines": {
+    "node": ">=22.6.0"
+  },
   "scripts": {
     "test": "node --experimental-strip-types tests/test.mjs",
     "lint": "biome check .",

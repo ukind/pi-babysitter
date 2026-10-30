@@ -7,12 +7,18 @@ on:
 jobs:
   verify:
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        # Quoted on purpose: YAML types bare scalars (24 -> integer, 22.6 ->
+        # float), and node versions must reach setup-node as strings.
+        node: ["22.6.0", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 24
-      - run: npm install
+          node-version: ${{ matrix.node }}
+      # npm ci, not install: the lockfile is the contract (F012).
+      - run: npm ci
       - run: npm test
       - run: npm run lint
       - run: npm run typecheck

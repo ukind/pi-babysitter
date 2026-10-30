@@ -17,7 +17,10 @@
  * `evaluate` is exported so tests can exercise the decision core without
  * spawning this process.
  *
- * Requires Node.js 22.6 or newer.
+ * Requires Node.js 22.6 or newer. The floor is enforced at install time:
+ * package.json declares engines ">=22.6.0" and .npmrc sets engine-strict,
+ * so an older Node fails npm install instead of failing at first hook run
+ * (F013).
  */
 
 import { readFileSync } from "node:fs";
