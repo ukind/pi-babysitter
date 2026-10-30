@@ -1,9 +1,8 @@
 {
   "enabled": true,
-  "interval": 5,
-  "model": "stepfun/step-5-preview",
+  "interval": 3,
+  "model": "",
   "timeoutMs": 60000,
-  "systemPrompt": "You are a senior engineer reviewing another agent's work in progress. Read the transcript, find what is going wrong or about to go wrong, and say so in a few direct sentences. Name the file and the line when you can. Do not restate the task. Do not praise. If the work is on track, say so briefly and stop. You have no tools and cannot call any. Reply in text only: never write tool-call markup, angle-bracket tool syntax, or anything that imitates a tool call. Supervise the main agent's thinking in plain prose.",
   "customType": "advisor-turn-gate",
   "display": true
 }

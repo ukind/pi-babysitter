@@ -2,8 +2,8 @@
  * Offline unit tests for advisor-turn-gate: deterministic, no live model, no auth.
  * Run: node --experimental-strip-types tests/test.mjs   (from the repo root)
  *
- * Covers the offline-checkable Verification Notes in
- * .rpiv/artifacts/plans/2026-10-27_21-34-09_advisor-turn-gate-extension.md:
+ * Covers the offline-checkable Verification Notes of the original extension plan
+ * (the plan artifact is not committed; the path stays as a historical label only):
  * cadence arithmetic, the accumulator spread, fail-open, the fact that completeSimple
  * never rejects, the ALS scope, the marker living in sections, marker drift, and model
  * resolution. Config clamping and prompt assembly are covered as well, but they are
@@ -23,7 +23,7 @@
  * file resolves nothing from @earendil-works/* — a MODULE_NOT_FOUND here means a runtime
  * import leaked into one of them.
  */
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -243,17 +243,16 @@ assert(
   assert(mixed.display === DEFAULT_CONFIG.display, "t7: a null display falls back");
 }
 
-// --- 7b. the no-tools instruction rides BOTH carriers, and the display default is true.
+// --- 7b. the no-tools instruction rides the code default, and the display default is true.
 //         Stable marker substrings only — never full-string equality, so a wording
-//         tweak does not fail the band.
-{
-  const shipped = JSON.parse(readFileSync(new URL("../config.json", import.meta.url), "utf-8"));
-  assert(/no tools/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default forbids tools");
-  assert(/text only/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default demands text only");
-  assert(/no tools/.test(shipped.systemPrompt), "t7b: the shipped config forbids tools");
-  assert(/text only/.test(shipped.systemPrompt), "t7b: the shipped config demands text only");
-  assert(DEFAULT_CONFIG.display === true, "t7b: the display code default is true");
-}
+//         tweak does not fail the band. The shipped systemPrompt copy was removed
+//         (F005): the config.ts fallback makes the behavior bit-identical, and no
+//         shipped model exists to band against (the ship-empty decision).
+// No lone block around the asserts: with the shipped read gone the block would carry no
+// declaration, and biome rejects a declaration-free lone block (noUselessLoneBlockStatements).
+assert(/no tools/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default forbids tools");
+assert(/text only/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default demands text only");
+assert(DEFAULT_CONFIG.display === true, "t7b: the display code default is true");
 
 // --- 8. the model-key codec: slash wins, colon is legacy, neither is undefined.
 assert(
