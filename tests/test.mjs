@@ -43,7 +43,6 @@ import {
   parseModelKey,
   resetWarnOnceForTest,
   shouldFire,
-  shouldGate,
 } from "../config.ts";
 import { CHILD_MARKER_PATTERN, isChildSession } from "../guard.ts";
 import { buildCorrection, planCommit, planGate } from "../plan-turn.ts";
@@ -113,36 +112,9 @@ function captureWarn(fn) {
 const Q = String.fromCharCode(34);
 const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
 
-// --- 1. cadence: the modulo form gates once per interval; the STATELESS threshold form
-//        latches. Runs first because it is pure arithmetic with no module-level latch.
-{
-  const seq = [0, 1, 2, 3, 4, 5, 6, 7];
-  const two = seq.filter((i) => shouldGate(i, 2));
-  assert(
-    two.join(",") === "1,3,5,7",
-    `t1: interval 2 gates on turns 2,4,6,8 (got ${two.join(",")})`,
-  );
-  const three = seq.filter((i) => shouldGate(i, 3));
-  assert(three.join(",") === "2,5", `t1: interval 3 gates on turns 3,6 (got ${three.join(",")})`);
-  assert(
-    seq.every((i) => shouldGate(i, 1)),
-    "t1: interval 1 gates every turn",
-  );
-  assert(!shouldGate(0, 0), "t1: interval 0 never gates");
-  assert(!shouldGate(0, -1), "t1: a negative interval never gates");
-  // The rejected alternative, asserted so a refactor cannot silently adopt it. The
-  // anti-latch argument covers only this STATELESS form: F007's shouldFire is the
-  // stateful form, which cannot latch because lastFiredTurn advances on every fire
-  // (t1b pins that parity and the slide).
-  const latched = seq.filter((i) => i >= 2);
-  assert(
-    latched.length === 6,
-    "t1: the stateless threshold form would latch to 6 calls, which is why it is rejected",
-  );
-}
-
-// --- 1b. the stateful threshold (F007): shouldFire folds to shouldGate's exact sets,
-//         slides past an errored boundary, and cannot latch.
+// --- 1b. cadence: the stateful threshold (F007) folds to the modulo sets, slides past
+//         an errored boundary, and cannot latch. The pure modulo form lived here until
+//         F025 deleted it; its pins ride the fold simulator.
 {
   // The fold simulator: advance the latch only on fire, mirroring the seam's markFired.
   const fold = (seq, interval) => {
@@ -154,11 +126,20 @@ const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
     });
   };
   const seq = [0, 1, 2, 3, 4, 5, 6, 7];
-  assert(fold(seq, 2).join(",") === "1,3,5,7", "t1b: interval 2 folds to t1's exact set");
-  assert(fold(seq, 3).join(",") === "2,5", "t1b: interval 3 folds to t1's exact set");
+  assert(fold(seq, 2).join(",") === "1,3,5,7", "t1b: interval 2 folds to the modulo set");
+  assert(fold(seq, 3).join(",") === "2,5", "t1b: interval 3 folds to the modulo set");
   assert(fold(seq, 1).join(",") === "0,1,2,3,4,5,6,7", "t1b: interval 1 folds to every turn");
   assert(!shouldFire(0, 0, -1), "t1b: interval 0 never fires");
   assert(!shouldFire(0, -1, -1), "t1b: a negative interval never fires");
+  // The rejected STATELESS threshold form, asserted so a refactor cannot silently
+  // adopt it (moved verbatim from the deleted t1, F025): once turnIndex reaches the
+  // interval it fires on EVERY later turn. F007's shouldFire cannot latch because
+  // lastFiredTurn advances on every fire (the slide pins below).
+  const latched = seq.filter((i) => i >= 2);
+  assert(
+    latched.length === 6,
+    "t1b: the stateless threshold form would latch to 6 calls, which is why it is rejected",
+  );
   // No latch: after a quiet stretch the stale threshold fires once, then re-locks. The
   // stateless form would fire on EVERY later turn instead.
   assert(fold([0, 1, 2, 7, 8], 2).join(",") === "1,7", "t1b: a gap fires once and re-locks");
@@ -540,8 +521,8 @@ const gateArgs = (overrides = {}) => ({
 }
 // No lone block around the real-cadence asserts: they declare nothing, and biome rejects
 // a declaration-free lone block (noUselessLoneBlockStatements).
-// The real cadence predicate rides the seam: t1's interval sets, replayed through
-// the core against shouldFire, so a seam that drops or inverts turnIndex or
+// The real cadence predicate rides the seam: t1b's modulo interval sets, replayed
+// through the core against shouldFire, so a seam that drops or inverts turnIndex or
 // lastFiredTurn cannot pass silently.
 assert(
   planGate(gateArgs({ interval: 0 })).action === "skip",
