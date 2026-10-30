@@ -72,6 +72,15 @@ export function resolveAdvisorModel(
  * credential-derived request fields such as GitHub Copilot's OAuth-specific `baseUrl`.
  * Older hosts, and future hosts that move the slot, simply fall through.
  *
+ * F008 (accepted in writing): package.json declares this package `^1.4.0`, so a
+ * minor bump can relocate the `runtime` slot. When it moves, this function returns
+ * undefined, runAdvisor's fail-fast guard returns "no auth-aware completion facade
+ * on this host", and the commit seam notifies through reportFailure (plan-turn.ts's
+ * failure arm -> index.ts's notify -> report.ts:30-37) on every gate pass whose turn
+ * completed — the cadence latch spends on the outcome check (index.ts:60-61), so the
+ * failure re-reports each interval until the facade returns. The per-fire report is
+ * the accepted contract; the caret stays.
+ *
  * The returned method is bound because `ModelRuntime.completeSimple()` calls other
  * runtime methods through `this`.
  *
