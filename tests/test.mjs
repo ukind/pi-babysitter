@@ -55,6 +55,7 @@ import {
 } from "../prompt.ts";
 import { reportFailure } from "../report.ts";
 import { evaluate } from "../scripts/hooks/gate.mjs";
+import { isHookInvocation, parseHookStdin, readHookField } from "../scripts/hooks/lib.mjs";
 
 const assert = (cond, msg) => {
   if (!cond) {
@@ -1097,4 +1098,73 @@ for (const [name, response, check] of runCases) {
   assert(evaluate("") === null, "t19: empty command is allowed");
   assert(evaluate(undefined) === null, "t19: non-string is allowed");
   assert(evaluate("DROP TABLE users;") === "SQL drop statement", "t19: the reason names the rule");
+}
+
+// --- 19b. the refspec force marker (F009): a leading + on a refspec is git's own force
+//          signal, and the branch matcher sees it with the + normalized away.
+{
+  const blocked = [
+    "git push origin +main",
+    "git push origin +master",
+    "git push +main",
+    "git push origin +HEAD:main",
+    "git push origin +HEAD~1:main",
+    "git push --force origin +main",
+    "git push -f origin +main",
+    "git push --force-with-lease origin +main",
+    "git push origin main +main",
+    "git push origin +main:main",
+  ];
+  for (const command of blocked) {
+    assert(evaluate(command) !== null, `t19b: blocked: ${command}`);
+  }
+  assert(blocked.length === 10, "t19b: 10 forced-refspec forms block");
+  assert(
+    evaluate("git push origin +main") === "forced push to a protected branch",
+    "t19b: the + form reports the same reason as the flag form",
+  );
+  // The force-with-lease allowance survives, scoped to UNMARKED refspecs; a +
+  // on an unprotected branch is still an ordinary push.
+  const allowed = [
+    "git push --force-with-lease origin main",
+    "git push origin +feature/x",
+    "git push origin feature/x",
+  ];
+  for (const command of allowed) {
+    assert(evaluate(command) === null, `t19b: allowed: ${command}`);
+  }
+}
+
+// --- 19c. the shared hook plumbing (F017): invocation detection, stdin parse, field
+//          read. Only each hook's exit dispatch stays untested.
+{
+  assert(
+    isHookInvocation(["node", "/repo/scripts/hooks/gate.mjs"], "gate.mjs"),
+    "t19c: the gate path matches gate.mjs",
+  );
+  assert(
+    isHookInvocation(["node", "\\repo\\scripts\\hooks\\gate.mjs"], "gate.mjs"),
+    "t19c: a Windows path matches gate.mjs",
+  );
+  assert(
+    !isHookInvocation(["node", "/repo/scripts/hooks/feedback.mjs"], "gate.mjs"),
+    "t19c: the feedback hook does not match gate.mjs",
+  );
+  assert(!isHookInvocation(["node"], "gate.mjs"), "t19c: a missing entry arg never matches");
+  const object = parseHookStdin('{"tool_input":{"command":"ls"}}');
+  assert(object?.tool_input?.command === "ls", "t19c: an object body parses");
+  assert(parseHookStdin("{ not json") === undefined, "t19c: a parse error returns undefined");
+  assert(parseHookStdin("42") === undefined, "t19c: a non-object body returns undefined");
+  assert(parseHookStdin("null") === undefined, "t19c: a null body returns undefined");
+  const payload = { tool_input: { command: "ls" }, toolInput: { file_path: "a.ts" } };
+  assert(readHookField(payload, "command") === "ls", "t19c: the snake_case carrier reads");
+  assert(
+    readHookField(payload, "file_path") === "a.ts",
+    "t19c: the camelCase carrier is the fallback",
+  );
+  assert(readHookField({}, "command") === undefined, "t19c: a missing field returns undefined");
+  assert(
+    readHookField(undefined, "command") === undefined,
+    "t19c: a missing payload returns undefined",
+  );
 }

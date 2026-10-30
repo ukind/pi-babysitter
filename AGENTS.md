@@ -23,6 +23,7 @@ advice as a `custom_message` entry in the durable transcript.
 - `report.ts` — failure reporting to the TUI.
 - `tests/test.mjs` — offline unit tests. Run with `npm test`.
 - `scripts/hooks/gate.mjs` — PreToolUse gate hook. Blocks catastrophic Bash commands.
+- `scripts/hooks/lib.mjs` — shared hook plumbing: invocation detection, stdin parse, field read.
 - `scripts/hooks/feedback.mjs` — PostToolUse hook. Runs `node --check` on edited JS and TS files.
 
 ## Conventions

@@ -8,6 +8,12 @@
  * unexpected shape fails open: the call proceeds, so the gate never becomes
  * a denial-of-service on itself.
  *
+ * The blocklist is deliberately narrow, and every rule is cheap string work:
+ * recursive rm on root-like targets, forced pushes to a protected branch (a
+ * leading + on a refspec is git's own force marker), git reset --hard,
+ * destructive git clean, SQL drops, mkfs, raw disk writes, and a
+ * world-writable chmod from root. Everything else passes untouched.
+ *
  * `evaluate` is exported so tests can exercise the decision core without
  * spawning this process.
  *
@@ -15,6 +21,7 @@
  */
 
 import { readFileSync } from "node:fs";
+import { isHookInvocation, parseHookStdin, readHookField } from "./lib.mjs";
 
 /** Targets whose deletion endangers data outside one project. */
 const ROOT_LIKE_TARGETS = new Set([
@@ -51,9 +58,23 @@ function blocksRecursiveRemove(command) {
 
 function blocksProtectedForcePush(command) {
   if (!/\bgit\s+push\b/.test(command)) return false;
-  const forced = /\s--force(?!-with-lease)\b|\s-f\b/.test(command);
-  const protectedBranch = /\s(?:origin\s+)?(?:(?:HEAD|HEAD~\d+):)?(?:main|master)\b/.test(command);
-  return forced && protectedBranch;
+  const tokens = command.trim().split(/\s+/);
+  // Two force signals: the explicit flag (unchanged), and a leading + on a
+  // refspec — git's own force marker (git-push(1)). The flag scan cannot see
+  // the +: `git push origin +main` and `git push --force-with-lease origin
+  // +main` carry no --force or -f at all.
+  const flagForced = /\s--force(?!-with-lease)\b|\s-f\b/.test(command);
+  const plusForced = tokens.some((token) => token.startsWith("+"));
+  if (!flagForced && !plusForced) return false;
+  // Normalize the + away BEFORE the branch match, or +main, +HEAD:main, and
+  // mixed refspecs (`git push origin main +main`) slip past the matcher.
+  const normalized = tokens
+    .map((token) => (token.startsWith("+") ? token.slice(1) : token))
+    .join(" ");
+  const protectedBranch = /\s(?:origin\s+)?(?:(?:HEAD|HEAD~\d+):)?(?:main|master)\b/.test(
+    normalized,
+  );
+  return protectedBranch;
 }
 
 /**
@@ -74,19 +95,16 @@ export function evaluate(command) {
   return null;
 }
 
-function isHookInvocation(argv) {
-  const entry = argv[1] ?? "";
-  return /gate\.mjs$/.test(entry.replace(/\\/g, "/"));
-}
-
-if (isHookInvocation(process.argv)) {
-  let payload;
+if (isHookInvocation(process.argv, "gate.mjs")) {
+  let raw;
   try {
-    payload = JSON.parse(readFileSync(0, "utf8"));
+    raw = readFileSync(0, "utf8");
   } catch {
     process.exit(0); // fail open: unreadable input never blocks the agent
   }
-  const command = payload?.tool_input?.command ?? payload?.toolInput?.command;
+  const payload = parseHookStdin(raw);
+  if (!payload) process.exit(0); // fail open: an unusable body never blocks the agent
+  const command = readHookField(payload, "command");
   if (typeof command !== "string") process.exit(0);
   const violation = evaluate(command);
   if (violation !== null) {

@@ -12,6 +12,7 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
+import { isHookInvocation, parseHookStdin, readHookField } from "./lib.mjs";
 
 const CHECKED_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]);
 
@@ -23,19 +24,16 @@ export function syntaxCheck(file) {
   return { ok: false, detail: stderr.length > 0 ? stderr : `exit code ${result.status}` };
 }
 
-function isHookInvocation(argv) {
-  const entry = argv[1] ?? "";
-  return /feedback\.mjs$/.test(entry.replace(/\\/g, "/"));
-}
-
-if (isHookInvocation(process.argv)) {
-  let payload;
+if (isHookInvocation(process.argv, "feedback.mjs")) {
+  let raw;
   try {
-    payload = JSON.parse(readFileSync(0, "utf8"));
+    raw = readFileSync(0, "utf8");
   } catch {
     process.exit(0);
   }
-  const file = payload?.tool_input?.file_path ?? payload?.toolInput?.file_path;
+  const payload = parseHookStdin(raw);
+  if (!payload) process.exit(0);
+  const file = readHookField(payload, "file_path");
   if (typeof file !== "string" || file.length === 0) process.exit(0);
   const extension = file.slice(file.lastIndexOf(".")).toLowerCase();
   if (!CHECKED_EXTENSIONS.has(extension)) process.exit(0);
