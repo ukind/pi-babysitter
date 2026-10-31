@@ -46,6 +46,15 @@ export function readHookField(payload, key) {
 }
 
 /**
+ * The spawnSync budget for one syntax check, in milliseconds. One literal, two
+ * consumers: describeSpawnResult's timeout wording and feedback.mjs's spawnSync
+ * timeout both derive from it, so a future bump cannot make the message lie
+ * (F026). 10_000 / 1000 renders as exactly "10", keeping the t20 pin
+ * byte-identical.
+ */
+export const SYNTAX_CHECK_BUDGET_MS = 10_000;
+
+/**
  * Turn one spawnSync result into the { ok, detail } verdict the feedback hook reports.
  *
  * Branch order is the F018 fix, and it follows Node's real spawnSync shapes: a timeout
@@ -54,12 +63,17 @@ export function readHookField(payload, key) {
  * spawn failure still surfaces its own message. Then a clean exit, then a signal kill
  * without an error (reported as a kill, never claimed as a timeout), then the ordinary
  * non-zero exit with its stderr, and the bare exit code only when stderr is empty.
- * The "after 10s" wording mirrors syntaxCheck's 10s budget — the only caller.
+ * The "after Ns" wording derives from SYNTAX_CHECK_BUDGET_MS (F026); syntaxCheck in
+ * feedback.mjs — this function's only production caller — passes the same constant as
+ * its spawnSync timeout.
  */
 export function describeSpawnResult(result) {
   if (result.error) {
     if (result.status === null && result.signal) {
-      return { ok: false, detail: `timed out after 10s (signal ${result.signal})` };
+      return {
+        ok: false,
+        detail: `timed out after ${SYNTAX_CHECK_BUDGET_MS / 1000}s (signal ${result.signal})`,
+      };
     }
     return { ok: false, detail: result.error.message };
   }

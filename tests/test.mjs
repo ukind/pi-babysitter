@@ -43,7 +43,6 @@ import {
   parseModelKey,
   resetWarnOnceForTest,
   shouldFire,
-  shouldGate,
 } from "../config.ts";
 import { CHILD_MARKER_PATTERN, isChildSession } from "../guard.ts";
 import { buildCorrection, planCommit, planGate } from "../plan-turn.ts";
@@ -113,36 +112,9 @@ function captureWarn(fn) {
 const Q = String.fromCharCode(34);
 const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
 
-// --- 1. cadence: the modulo form gates once per interval; the STATELESS threshold form
-//        latches. Runs first because it is pure arithmetic with no module-level latch.
-{
-  const seq = [0, 1, 2, 3, 4, 5, 6, 7];
-  const two = seq.filter((i) => shouldGate(i, 2));
-  assert(
-    two.join(",") === "1,3,5,7",
-    `t1: interval 2 gates on turns 2,4,6,8 (got ${two.join(",")})`,
-  );
-  const three = seq.filter((i) => shouldGate(i, 3));
-  assert(three.join(",") === "2,5", `t1: interval 3 gates on turns 3,6 (got ${three.join(",")})`);
-  assert(
-    seq.every((i) => shouldGate(i, 1)),
-    "t1: interval 1 gates every turn",
-  );
-  assert(!shouldGate(0, 0), "t1: interval 0 never gates");
-  assert(!shouldGate(0, -1), "t1: a negative interval never gates");
-  // The rejected alternative, asserted so a refactor cannot silently adopt it. The
-  // anti-latch argument covers only this STATELESS form: F007's shouldFire is the
-  // stateful form, which cannot latch because lastFiredTurn advances on every fire
-  // (t1b pins that parity and the slide).
-  const latched = seq.filter((i) => i >= 2);
-  assert(
-    latched.length === 6,
-    "t1: the stateless threshold form would latch to 6 calls, which is why it is rejected",
-  );
-}
-
-// --- 1b. the stateful threshold (F007): shouldFire folds to shouldGate's exact sets,
-//         slides past an errored boundary, and cannot latch.
+// --- 1b. cadence: the stateful threshold (F007) folds to the modulo sets, slides past
+//         an errored boundary, and cannot latch. The pure modulo form lived here until
+//         F025 deleted it; its pins ride the fold simulator.
 {
   // The fold simulator: advance the latch only on fire, mirroring the seam's markFired.
   const fold = (seq, interval) => {
@@ -154,11 +126,20 @@ const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
     });
   };
   const seq = [0, 1, 2, 3, 4, 5, 6, 7];
-  assert(fold(seq, 2).join(",") === "1,3,5,7", "t1b: interval 2 folds to t1's exact set");
-  assert(fold(seq, 3).join(",") === "2,5", "t1b: interval 3 folds to t1's exact set");
+  assert(fold(seq, 2).join(",") === "1,3,5,7", "t1b: interval 2 folds to the modulo set");
+  assert(fold(seq, 3).join(",") === "2,5", "t1b: interval 3 folds to the modulo set");
   assert(fold(seq, 1).join(",") === "0,1,2,3,4,5,6,7", "t1b: interval 1 folds to every turn");
   assert(!shouldFire(0, 0, -1), "t1b: interval 0 never fires");
   assert(!shouldFire(0, -1, -1), "t1b: a negative interval never fires");
+  // The rejected STATELESS threshold form, asserted so a refactor cannot silently
+  // adopt it (moved verbatim from the deleted t1, F025): once turnIndex reaches the
+  // interval it fires on EVERY later turn. F007's shouldFire cannot latch because
+  // lastFiredTurn advances on every fire (the slide pins below).
+  const latched = seq.filter((i) => i >= 2);
+  assert(
+    latched.length === 6,
+    "t1b: the stateless threshold form would latch to 6 calls, which is why it is rejected",
+  );
   // No latch: after a quiet stretch the stale threshold fires once, then re-locks. The
   // stateless form would fire on EVERY later turn instead.
   assert(fold([0, 1, 2, 7, 8], 2).join(",") === "1,7", "t1b: a gap fires once and re-locks");
@@ -540,8 +521,8 @@ const gateArgs = (overrides = {}) => ({
 }
 // No lone block around the real-cadence asserts: they declare nothing, and biome rejects
 // a declaration-free lone block (noUselessLoneBlockStatements).
-// The real cadence predicate rides the seam: t1's interval sets, replayed through
-// the core against shouldFire, so a seam that drops or inverts turnIndex or
+// The real cadence predicate rides the seam: t1b's modulo interval sets, replayed
+// through the core against shouldFire, so a seam that drops or inverts turnIndex or
 // lastFiredTurn cannot pass silently.
 assert(
   planGate(gateArgs({ interval: 0 })).action === "skip",
@@ -783,13 +764,40 @@ assert(
     // the executable trace caught the pair-anchored tier 2 letting both through.
     ["orphan function opener", "<function=foo>\nafter", "after"],
     ["orphan parameter closer", "before </parameter> after", "before  after"],
+    // F023: the widened dialects. A complete region, an orphan opener, and an
+    // orphan closer for the new vocabulary.
+    [
+      "complete function_calls region",
+      '<function_calls>\n<invoke name="x">\n<parameter=y>1</parameter>\n</invoke>\n</function_calls>\nKeep.',
+      "Keep.",
+    ],
+    ["orphan invoke opener", '<invoke name="x">\nafter', "after"],
+    ["orphan function_calls closer", "before </function_calls> after", "before  after"],
+    // A mid-tag cut of the new dialect is NOT markup either: `<function_ca`
+    // matches no widened arm (n-to-_ is no boundary; the function_calls arm
+    // needs the full token), so the guard must miss it. The blank-line-run
+    // input pins the guard's miss directly: byte-identity proves the collapse
+    // pass never ran, not merely that the tags are gone.
+    [
+      "function_ca cut survives blank-line runs",
+      "para1\n\n\nbefore <function_ca after\n\n\npara2",
+      "para1\n\n\nbefore <function_ca after\n\n\npara2",
+    ],
   ];
   for (const [name, input, expected] of cases) {
     const out = stripAdvisorMarkup(input);
     assert(out === expected, `t15b: ${name} (got ${JSON.stringify(out)})`);
+    const residue = [
+      "<tool_call>",
+      "</tool_call>",
+      "<function_calls>",
+      "</function_calls>",
+      "<invoke>",
+      "</invoke>",
+    ];
     assert(
-      !out.includes("<tool_call>") && !out.includes("</tool_call>"),
-      `t15b: ${name} leaves no tool_call substring`,
+      residue.every((tag) => !out.includes(tag)),
+      `t15b: ${name} leaves no fake-markup substring`,
     );
   }
   // Innocent prose survives byte-identical.
@@ -831,6 +839,11 @@ const runCases = [
     "error surfaces errorMessage",
     { stopReason: "error", errorMessage: "Provider is not configured: anthropic", content: [] },
     (o) => !o.ok && /Provider is not configured/.test(o.reason),
+  ],
+  [
+    "empty errorMessage falls back",
+    { stopReason: "error", errorMessage: "", content: [] },
+    (o) => !o.ok && o.reason === "advisor stopped with error",
   ],
   [
     "aborted surfaces the stop reason",
@@ -1106,8 +1119,9 @@ for (const [name, response, check] of runCases) {
   assert(evaluate("DROP TABLE users;") === "SQL drop statement", "t19: the reason names the rule");
 }
 
-// --- 19b. the refspec force marker (F009): a leading + on a refspec is git's own force
-//          signal, and the branch matcher sees it with the + normalized away.
+// --- 19b. the refspec force markers (F009, F021, F022): a leading + on a refspec is
+//          git's own force signal, and every refspec token is matched individually
+//          against the protected-branch shape.
 {
   const blocked = [
     "git push origin +main",
@@ -1120,21 +1134,29 @@ for (const [name, response, check] of runCases) {
     "git push --force-with-lease origin +main",
     "git push origin main +main",
     "git push origin +main:main",
+    "git push --force origin refs/heads/main",
+    "git push origin +refs/heads/main",
+    "git push -f origin HEAD:refs/heads/main",
+    "git push origin --force refs/heads/main",
+    "git push origin +:main",
   ];
   for (const command of blocked) {
     assert(evaluate(command) !== null, `t19b: blocked: ${command}`);
   }
-  assert(blocked.length === 10, "t19b: 10 forced-refspec forms block");
+  assert(blocked.length === 15, "t19b: 15 forced-refspec forms block");
   assert(
     evaluate("git push origin +main") === "forced push to a protected branch",
     "t19b: the + form reports the same reason as the flag form",
   );
   // The force-with-lease allowance survives, scoped to UNMARKED refspecs; a +
-  // on an unprotected branch is still an ordinary push.
+  // on an unprotected branch is still an ordinary push; and a forced push of
+  // an UNPROTECTED branch alongside a plain protected one no longer convicts
+  // the whole command (F022's false positive).
   const allowed = [
     "git push --force-with-lease origin main",
     "git push origin +feature/x",
     "git push origin feature/x",
+    "git push origin main +feature/x",
   ];
   for (const command of allowed) {
     assert(evaluate(command) === null, `t19b: allowed: ${command}`);

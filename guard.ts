@@ -40,8 +40,9 @@
  * (append mode only) and not the `#<agentId>` session-name suffix (set only when
  * `options.agentId` is, src/agent-runner.ts:1108-1111) — carries the veto.
  *
- * The stale `"You are a child subagent"` pattern still configured at
- * settings.json:84-90 matches nothing in the installed package. The offline test asserts
+ * The stale `"You are a child subagent"` rule may still be configured in the host's
+ * user-global settings, outside this repository — this repo cannot reach or fix it.
+ * It matches nothing in the installed package. The offline test asserts
  * this pattern matches the live literal and rejects that stale one.
  */
 export const CHILD_MARKER_PATTERN = /<active_agent\s+name="[^"]*"\s*\/>/;

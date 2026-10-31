@@ -15,12 +15,20 @@
 
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { describeSpawnResult, isHookInvocation, parseHookStdin, readHookField } from "./lib.mjs";
+import {
+  describeSpawnResult,
+  isHookInvocation,
+  parseHookStdin,
+  readHookField,
+  SYNTAX_CHECK_BUDGET_MS,
+} from "./lib.mjs";
 
 const CHECKED_EXTENSIONS = new Set([".js", ".mjs", ".cjs", ".ts", ".mts", ".cts"]);
 
 export function syntaxCheck(file) {
-  const result = spawnSync(process.execPath, ["--check", file], { timeout: 10_000 });
+  const result = spawnSync(process.execPath, ["--check", file], {
+    timeout: SYNTAX_CHECK_BUDGET_MS,
+  });
   // The spawnSync decision table lives in describeSpawnResult (lib.mjs): the timeout is
   // named as a timeout there instead of surfacing raw ETIMEDOUT noise (F018).
   return describeSpawnResult(result);

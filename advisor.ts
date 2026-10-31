@@ -72,6 +72,15 @@ export function resolveAdvisorModel(
  * credential-derived request fields such as GitHub Copilot's OAuth-specific `baseUrl`.
  * Older hosts, and future hosts that move the slot, simply fall through.
  *
+ * F008 (accepted in writing): package.json declares this package `^1.4.0`, so a
+ * minor bump can relocate the `runtime` slot. When it moves, this function returns
+ * undefined, runAdvisor's fail-fast guard returns "no auth-aware completion facade
+ * on this host", and the commit seam notifies through reportFailure (plan-turn.ts's
+ * failure arm -> index.ts's notify -> report.ts:30-37) on every gate pass whose turn
+ * completed — the cadence latch spends on the outcome check (index.ts:60-61), so the
+ * failure re-reports each interval until the facade returns. The per-fire report is
+ * the accepted contract; the caret stays.
+ *
  * The returned method is bound because `ModelRuntime.completeSimple()` calls other
  * runtime methods through `this`.
  *
@@ -111,61 +120,69 @@ export function extractAdvisorText(response: AssistantMessage): string {
 const TOOL_CALL_REGION_PATTERN = /<tool_call\b[^>]*>[\s\S]*?<\/tool_call\s*>/g;
 
 /**
- * Tier 2: residual vocabulary debris — a `<function=…>…</function>` or
- * `<parameter=…>…</parameter>` construct a truncated or hand-written region
- * leaves behind, payload included.
+ * Tier 2: residual vocabulary debris — a `<function=…>…</function>`,
+ * `<function_calls>…</function_calls>`, or `<parameter=…>…</parameter>`
+ * construct a truncated or hand-written region leaves behind, payload
+ * included. The widened group (F023) adds the function_calls and invoke
+ * dialects the audit caught reaching the transcript.
  *
  * Bounded attribute matching admits both quoted and unquoted values. Swept
  * AFTER tier 1 so a complete region is removed whole and this only sees
  * orphans.
  */
 const TOOL_VOCABULARY_PATTERN =
-  /<(?:function|parameter)\b[^>]*>[\s\S]*?<\/(?:function|parameter)\s*>/g;
+  /<(?:tool_call|function_calls|function|parameter|invoke)\b[^>]*>[\s\S]*?<\/(?:tool_call|function_calls|function|parameter|invoke)\s*>/g;
 
 /**
  * Tier 3: the literal guarantee. Any surviving opener or closer tag is
  * deleted unconditionally, which is what makes AC1 a direct assertion rather
- * than an inference from tier-1 coverage.
+ * than an inference from tier-1 coverage. The group must stay BYTE-IDENTICAL
+ * to TOOL_MARKUP_PATTERN's (F023): tier 3 superset of the guard is what makes
+ * a guard hit always mean a tier hit.
  *
  * The cost is deliberate: the advisor cannot quote a fake tool call as
  * evidence. AC1 is substring-shaped, so the guarantee wins over the quote.
  */
-const TOOL_CALL_LITERAL_PATTERN = /<\/?tool_call\b[^>]*>?/g;
+const TOOL_CALL_LITERAL_PATTERN =
+  /<\/?(?:tool_call|function_calls|function|parameter|invoke)\b[^>]*>?/g;
 
 /**
  * Tier 2b: orphan sweep — vocabulary tokens whose paired counterpart never
- * arrived (`<function=foo>` with no closer, `</parameter>` with no opener).
+ * arrived (`<function=foo>` with no closer, `</parameter>` or
+ * `</function_calls>` with no opener, a bare `<invoke>`).
  *
  * The pair-anchored tier 2 lets both through; the executable trace caught it.
  * Swept LAST so paired constructs are removed whole first and this only sees
  * the residue. The \b form also matches a bare `<function …>` opener — the
  * accepted cost of closing the orphan inlet.
  */
-const TOOL_VOCABULARY_ORPHAN_PATTERN = /<\/?(?:function|parameter)\b[^>]*>/g;
+const TOOL_VOCABULARY_ORPHAN_PATTERN =
+  /<\/?(?:tool_call|function_calls|function|parameter|invoke)\b[^>]*>/g;
 
 /**
- * The identity guard: fires when ANY tier could match — a tool_call tag (open
- * or closed) or a function/parameter vocabulary token (open or closed).
+ * The identity guard: fires when ANY tier could match — a tool_call,
+ * function_calls, invoke, function, or parameter tag (open or closed).
  *
  * Returns the input byte-identical otherwise. Its misses are exactly the
  * pipeline's no-ops: `<tool_callx` (no word boundary) matches neither, so the
  * guard cannot strand markup the tiers would have removed. Proven by trace:
  * every tier-triggering fixture matches, and every guard-missing fixture is
- * one the pipeline leaves unchanged.
+ * one the pipeline leaves unchanged. The group must stay BYTE-IDENTICAL to
+ * TOOL_CALL_LITERAL_PATTERN's (F023): a guard hit must always mean a tier hit.
  */
-const TOOL_MARKUP_PATTERN = /<\/?(?:tool_call|function|parameter)\b/;
+const TOOL_MARKUP_PATTERN = /<\/?(?:tool_call|function_calls|function|parameter|invoke)\b/;
 
 /**
  * Strip fake tool-call markup from the advisor's reply, keeping the advice.
  *
- * The advisor runs with `tools: []` (`advisor.ts:194`) and fakes tool calls as
+ * The advisor runs with `tools: []` (runAdvisor's `completeSimple` call) and fakes tool calls as
  * plain text. `extractAdvisorText` keeps every text block, so that pseudo-syntax
  * reaches the commit seam verbatim and lands in the durable transcript and the
  * LLM context re-projection. This is the filter between the two.
  *
  * Four passes, in order: complete regions, paired vocabulary debris, the
- * literal tool_call sweep, then an orphan sweep for vocabulary tokens whose
- * pair never arrived. The result is trimmed, so a reply that is nothing but
+ * literal tag sweep, then an orphan sweep for vocabulary tokens whose pair
+ * never arrived. The result is trimmed, so a reply that is nothing but
  * markup strips to `""` — the value the empty-guard at the commit seam
  * consumes.
  *
@@ -312,7 +329,7 @@ export async function runAdvisor(params: {
     if (response.stopReason !== "stop") {
       return {
         ok: false,
-        reason: response.errorMessage ?? `advisor stopped with ${response.stopReason}`,
+        reason: response.errorMessage || `advisor stopped with ${response.stopReason}`,
       };
     }
     const text = extractAdvisorText(response);
