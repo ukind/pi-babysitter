@@ -18,6 +18,28 @@ export interface AdvisorGateConfig {
   customType: string;
   /** Whether the committed entry renders in the TUI transcript. */
   display: boolean;
+  /** Fire when a turn's usage grew by at least this many tokens. 0 disables the signal. */
+  triggerMinNewTokens: number;
+  /** Fire when the context window is at least this percent full. 0 disables the signal. */
+  triggerContextPercent: number;
+  /** Fire when a turn errors. Aborted turns never fire. */
+  triggerOnError: boolean;
+  /** Comma-separated risky tool names; any exact match on a tool result fires. Empty disables. */
+  triggerRiskyTools: string;
+  /** Soft cap for the advisor payload, in estimated tokens (JSON characters / 4). 0 disables the fold. */
+  tokenBudget: number;
+  /** Advisor entries kept per project in the local memory store. 0 disables memory. */
+  memoryCap: number;
+  /** Whether the advisor may declare its read_file sandbox tool. */
+  toolsEnabled: boolean;
+  /** Tool-use rounds the advisor may spend per fire. 1 allows one round. */
+  maxToolRounds: number;
+  /** "provider/modelId" of the on-demand specialist. Empty disables consults. */
+  specialistModel: string;
+  /** System prompt handed to the specialist leg. */
+  specialistSystemPrompt: string;
+  /** Commit the advisor's reply at the next agent settlement instead of blocking turn_end. */
+  asyncMode: boolean;
 }
 
 export const DEFAULT_CONFIG: AdvisorGateConfig = {
@@ -36,6 +58,21 @@ export const DEFAULT_CONFIG: AdvisorGateConfig = {
     "tool call. Supervise the main agent's thinking in plain prose.",
   customType: "advisor-turn-gate",
   display: true,
+  triggerMinNewTokens: 0,
+  triggerContextPercent: 0,
+  triggerOnError: false,
+  triggerRiskyTools: "",
+  tokenBudget: 0,
+  memoryCap: 0,
+  toolsEnabled: false,
+  maxToolRounds: 3,
+  specialistModel: "",
+  specialistSystemPrompt:
+    "You are a domain specialist consulted by a senior engineer who is reviewing " +
+    "another agent's work. Answer the question asked in a few direct sentences. " +
+    "Name the file and the line when you can. Reply in text only: never write " +
+    "tool-call markup or anything that imitates a tool call.",
+  asyncMode: false,
 };
 
 /** Hard bounds. A value outside these is clamped, never rejected. */
@@ -43,6 +80,16 @@ export const MIN_INTERVAL = 1;
 export const MAX_INTERVAL = 100;
 export const MIN_TIMEOUT_MS = 1000;
 export const MAX_TIMEOUT_MS = 60000;
+export const MIN_TRIGGER_TOKENS = 0;
+export const MAX_TRIGGER_TOKENS = 100000;
+export const MIN_TRIGGER_PERCENT = 0;
+export const MAX_TRIGGER_PERCENT = 100;
+export const MIN_TOKEN_BUDGET = 0;
+export const MAX_TOKEN_BUDGET = 1000000;
+export const MIN_MEMORY_CAP = 0;
+export const MAX_MEMORY_CAP = 200;
+export const MIN_TOOL_ROUNDS = 1;
+export const MAX_TOOL_ROUNDS = 10;
 
 export const CONFIG_URL = new URL("config.json", import.meta.url);
 
@@ -182,6 +229,67 @@ export function loadConfig(): AdvisorGateConfig {
           ? parsed.customType.trim()
           : DEFAULT_CONFIG.customType,
       display: typeof parsed.display === "boolean" ? parsed.display : DEFAULT_CONFIG.display,
+      // triggerRiskyTools accepts ANY string including "" — empty is the valid
+      // disabled state, so unlike systemPrompt/customType an empty value does
+      // not fall back to the default.
+      triggerMinNewTokens:
+        typeof parsed.triggerMinNewTokens === "number"
+          ? clampWithWarn(
+              "triggerMinNewTokens",
+              parsed.triggerMinNewTokens,
+              MIN_TRIGGER_TOKENS,
+              MAX_TRIGGER_TOKENS,
+            )
+          : DEFAULT_CONFIG.triggerMinNewTokens,
+      triggerContextPercent:
+        typeof parsed.triggerContextPercent === "number"
+          ? clampWithWarn(
+              "triggerContextPercent",
+              parsed.triggerContextPercent,
+              MIN_TRIGGER_PERCENT,
+              MAX_TRIGGER_PERCENT,
+            )
+          : DEFAULT_CONFIG.triggerContextPercent,
+      triggerOnError:
+        typeof parsed.triggerOnError === "boolean"
+          ? parsed.triggerOnError
+          : DEFAULT_CONFIG.triggerOnError,
+      triggerRiskyTools:
+        typeof parsed.triggerRiskyTools === "string"
+          ? parsed.triggerRiskyTools
+          : DEFAULT_CONFIG.triggerRiskyTools,
+      tokenBudget:
+        typeof parsed.tokenBudget === "number"
+          ? clampWithWarn("tokenBudget", parsed.tokenBudget, MIN_TOKEN_BUDGET, MAX_TOKEN_BUDGET)
+          : DEFAULT_CONFIG.tokenBudget,
+      memoryCap:
+        typeof parsed.memoryCap === "number"
+          ? clampWithWarn("memoryCap", parsed.memoryCap, MIN_MEMORY_CAP, MAX_MEMORY_CAP)
+          : DEFAULT_CONFIG.memoryCap,
+      toolsEnabled:
+        typeof parsed.toolsEnabled === "boolean"
+          ? parsed.toolsEnabled
+          : DEFAULT_CONFIG.toolsEnabled,
+      maxToolRounds:
+        typeof parsed.maxToolRounds === "number"
+          ? clampWithWarn("maxToolRounds", parsed.maxToolRounds, MIN_TOOL_ROUNDS, MAX_TOOL_ROUNDS)
+          : DEFAULT_CONFIG.maxToolRounds,
+      // specialistModel accepts ANY string including "" — empty is the valid
+      // disabled state (the triggerRiskyTools precedent). A non-empty but
+      // unparseable value never arms the consult: the seam's parseModelKey gate
+      // drops it, and the fire proceeds base-only. No clamp, no warn: the
+      // specialist is optional and its misconfiguration degrades to the pre-FR6
+      // behavior, not to an error channel.
+      specialistModel:
+        typeof parsed.specialistModel === "string"
+          ? parsed.specialistModel.trim()
+          : DEFAULT_CONFIG.specialistModel,
+      specialistSystemPrompt:
+        typeof parsed.specialistSystemPrompt === "string" && parsed.specialistSystemPrompt.trim()
+          ? parsed.specialistSystemPrompt
+          : DEFAULT_CONFIG.specialistSystemPrompt,
+      asyncMode:
+        typeof parsed.asyncMode === "boolean" ? parsed.asyncMode : DEFAULT_CONFIG.asyncMode,
     };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;

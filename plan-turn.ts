@@ -1,39 +1,49 @@
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { BoundaryResult } from "@earendil-works/pi-coding-agent";
 import type { AdvisorOutcome, AdvisorResolution } from "./advisor";
+import type { TriggerDecision } from "./triggers";
+
+/** The advice draft both commit paths build (blocking turn_end, async settle). */
+function buildAdviceDraft(
+  customType: string,
+  text: string,
+  display: boolean,
+  details?: AdvisorEntryDetails,
+) {
+  return {
+    type: "custom_message" as const,
+    customType,
+    content: text,
+    display,
+    // The conditional spread is load-bearing: a literal details: undefined
+    // would still create the key, and t24 pins its absence for the
+    // unstamped shape.
+    ...(details === undefined ? {} : { details }),
+  };
+}
 
 /**
- * plan-turn.ts — the advisor gate's decision cores, extracted from index.ts.
+ * One committed guidance entry plus the forced continuation.
  *
- * The turn_end decision splits around the single await: everything before runAdvisor is
- * planGate, everything after it is planCommit. Both are pure, and every sibling
- * capability arrives as an injected thunk, so this module has ZERO runtime imports —
- * no package resolves at runtime and no sibling is imported at runtime. The three
- * imports above are TYPE-only, so they are erased before the module runs under plain
- * node and under pi's jiti alike (precedents: index.ts:1, prompt.ts:1). The offline
- * suite imports this file directly, which is the point of the extraction: the decision
- * logic of index.ts becomes testable without loading index.ts.
- *
- * Laziness is part of the contract. Every early-out returns BEFORE any thunk runs, so
- * an off-cadence turn pays for no child scan, no parse, no resolve, and no mark — the
- * exact short-circuit economics of the pre-extraction index.ts.
+ * The optional details stamp (FR1) rides the draft verbatim: the host stores it as
+ * extension-specific metadata (session-manager.d.ts:103 "not sent to LLM") while the
+ * content itself replays into later context as a user message — the dialogue is the
+ * host's own re-projection, and the stamp only makes each entry machine-identifiable.
+ * An absent stamp leaves the draft WITHOUT a details key: the pre-FR1 byte shape, so
+ * entries from both sides of the upgrade coexist in one session file.
  */
-
-/** One committed guidance entry plus the forced continuation. */
 export function buildCorrection(
   customType: string,
   text: string,
   display: boolean,
   peerEntries: BoundaryResult["entries"],
+  details?: AdvisorEntryDetails,
 ): BoundaryResult {
   return {
     // The spread is mandatory. emitBoundary REPLACES the accumulator
     // (runner.js:775-776), so a returned array that omits event.entries discards
     // every peer draft — five other packages already register turn_end.
-    entries: [
-      ...(peerEntries ?? []),
-      { type: "custom_message", customType, content: text, display },
-    ],
+    entries: [...(peerEntries ?? []), buildAdviceDraft(customType, text, display, details)],
     continue: true,
   };
 }
@@ -70,6 +80,11 @@ export interface PlanGateArgs {
   parseModel: () => { provider: string; modelId: string } | undefined;
   resolve: (provider: string, modelId: string) => AdvisorResolution;
   buildMessages: (messages: Message[]) => Message[];
+  // FR3 trigger thunk, pre-bound with signals and thresholds at the seam. Absent
+  // when no threshold is armed, so an unarmed config pays nothing. Runs ONLY on a
+  // cadence miss: an on-cadence turn evaluates no signals (the cadence answer
+  // already fires the gate).
+  trigger?: () => TriggerDecision;
   // Invoked exactly once per gate-pass: after the completed check, before the vetoes.
   // The seam owns the single lastFiredTurn write; this core stays pure.
   markFired: (turnIndex: number) => void;
@@ -88,16 +103,28 @@ export interface PlanGateArgs {
 export function planGate(args: PlanGateArgs): GateDecision {
   if (!args.enabled) return { action: "skip", reason: "the gate is disabled" };
   if (!args.model) return { action: "skip", reason: "no model configured" };
-  // Cadence. shouldFire is the STATEFUL threshold form: it cannot latch, because
-  // lastFiredTurn advances on every fire. The anti-latch argument on shouldGate
-  // (config.ts) covers only the stateless form; t1 pins that form, t1b pins this one.
-  if (!args.gates(args.turnIndex, args.interval, args.lastFiredTurn)) {
+  // FR3 trigger arms. Cadence stays the primary clock: an on-cadence turn pays
+  // nothing for signal evaluation (the trigger thunk runs only on a cadence
+  // miss), and an unarmed config passes no thunk at all. Either arm passes the
+  // SAME gate-pass — the outcome check and markFired below run identically — so
+  // the latch spends exactly once per fire no matter which arm passed. The
+  // none-literal is inlined because a VALUE sibling import would break the
+  // zero-runtime-import contract this module documents.
+  const notTriggered: TriggerDecision = { action: "none", reason: "no signal" };
+  const cadenceDue = args.gates(args.turnIndex, args.interval, args.lastFiredTurn);
+  const triggered = !cadenceDue && args.trigger ? args.trigger() : notTriggered;
+  if (!cadenceDue && triggered.action !== "fire") {
     return { action: "skip", reason: "off cadence" };
   }
-  // An aborted or errored turn has no work worth reviewing — and does not spend its
-  // slot: markFired below runs only past this check, so the next completed turn at or
-  // past the boundary fires (the F007 slide, which the modulo form would not do).
-  if (args.outcome !== "completed") return { action: "skip", reason: `turn ${args.outcome}` };
+  // An aborted or errored turn has no work worth reviewing — UNLESS the error IS
+  // the trigger (triggerOnError): then the trouble is the signal and the fire
+  // bypasses this veto. Cadence fires never bypass it, so the F007 slide is
+  // untouched: a cadence-due errored turn still skips without spending its slot.
+  // Aborted turns never fire: no trigger signal covers them.
+  const errorTriggered = triggered.action === "fire" && triggered.signal === "error";
+  if (args.outcome !== "completed" && !errorTriggered) {
+    return { action: "skip", reason: `turn ${args.outcome}` };
+  }
   // Gate-pass. Record the fire BEFORE the vetoes, so a vetoed boundary spends its slot
   // and retries stay bounded to one per interval — a commit-time update would
   // re-attempt a broken registry on every later turn.
@@ -133,6 +160,9 @@ export interface PlanCommitArgs {
   display: boolean;
   peerEntries: BoundaryResult["entries"];
   strip: (text: string) => string;
+  // FR1 dialogue stamp, pre-built by the seam with stampDetails. Absent means
+  // unstamped; both notify arms ignore it.
+  details?: AdvisorEntryDetails;
 }
 
 /**
@@ -156,6 +186,113 @@ export function planCommit(args: PlanCommitArgs): CommitDecision {
   }
   return {
     action: "commit",
-    result: buildCorrection(args.customType, stripped, args.display, args.peerEntries),
+    result: buildCorrection(
+      args.customType,
+      stripped,
+      args.display,
+      args.peerEntries,
+      args.details,
+    ),
+  };
+}
+
+/** What planHostSupport tells the seam about the running host. */
+export type HostSupport = { supported: true } | { supported: false; message: string };
+
+/**
+ * Feature-detect the 1.4 boundary surface from the first turn_end event.
+ *
+ * The 0.79.x host dispatches turn_end as a bare emit with no outcome and no
+ * context (agent-session.js:375-384); under it planGate would skip every fire
+ * silently. The version number itself is not on the extension context, and a
+ * hardcoded package read would be a second fragile reach like F008, so the
+ * detect reads the event fields the gate actually needs.
+ */
+export function planHostSupport(outcome: unknown, context: unknown): HostSupport {
+  if (typeof outcome === "string" && context !== null && typeof context === "object") {
+    return { supported: true };
+  }
+  return {
+    supported: false,
+    message:
+      "advisor-turn-gate: host boundary events predate 1.4; " +
+      "the gate is disabled until the host is upgraded",
+  };
+}
+
+/** The stable keys every committed advisor entry carries (FR1). */
+export interface AdvisorEntryDetails {
+  /** 1-based ordinal of the fire that produced the entry; the seam counts commits. */
+  fire: string;
+  /** The turnIndex the fire landed on. */
+  turn: string;
+}
+
+/**
+ * The details stamp for fire number fire (1-based) on turn turnIndex.
+ *
+ * The single source of the key names: the seam, Slice 7's settle lookup, and the
+ * eval fixtures all read entries through these two keys, and t24 pins them, so a
+ * seam-side rename cannot ship silently. The values are strings for stable JSON
+ * round-trips and greppable session files.
+ */
+export function stampDetails(fire: number, turnIndex: number): AdvisorEntryDetails {
+  return { fire: String(fire), turn: String(turnIndex) };
+}
+
+/** One completed async advisor call waiting for its settle commit (FR8). */
+export interface HeldAdvice {
+  /** The advisor outcome, exactly as runAdvisor resolved it. */
+  outcome: AdvisorOutcome;
+  /** The turnIndex captured at fire time; the settle event carries none. */
+  turnIndex: number;
+}
+
+/** What planSettle tells the seam to do at agent_before_settle. */
+export type SettleDecision =
+  | { action: "abstain" }
+  | { action: "notify"; message: string }
+  | { action: "commit"; result: BoundaryResult };
+
+/** The held advice plus the injected shapers planSettle reads. */
+export interface PlanSettleArgs {
+  held: HeldAdvice | undefined;
+  customType: string;
+  display: boolean;
+  peerEntries: BoundaryResult["entries"];
+  strip: (text: string) => string;
+  details: AdvisorEntryDetails;
+}
+
+/**
+ * Turn one held async advisor outcome into the once-only settle decision.
+ *
+ * The abstain arm is the every-settle common case: an async-off session holds
+ * nothing and decides nothing. The notify arms reuse the exact reportFailure
+ * formats the blocking path pins. The commit arm spreads the SETTLE event's own
+ * accumulator and deliberately omits the continue key: a truthy result.continue
+ * at agent_before_settle makes the host ensure one next provider request
+ * (agent-session.js:1578-1584), which would wake an idle agent — FR8 forbids
+ * that. The draft is byte-identical to the blocking draft (shared builder); only
+ * the continue key differs.
+ */
+export function planSettle(args: PlanSettleArgs): SettleDecision {
+  if (!args.held) return { action: "abstain" };
+  if (!args.held.outcome.ok) {
+    return { action: "notify", message: `advisor-turn-gate: ${args.held.outcome.reason}` };
+  }
+  const stripped = args.strip(args.held.outcome.text);
+  if (!stripped) {
+    return { action: "notify", message: "advisor-turn-gate: advisor reply was markup only" };
+  }
+  return {
+    action: "commit",
+    result: {
+      entries: [
+        ...(args.peerEntries ?? []),
+        buildAdviceDraft(args.customType, stripped, args.display, args.details),
+      ],
+      // NO continue: the settle path never wakes an idle agent (FR8).
+    },
   };
 }

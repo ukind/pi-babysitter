@@ -1,0 +1,55 @@
+{
+  "name": "trigger-arms",
+  "pillar": "FR3",
+  "config": {
+    "model": "stub/stub-model",
+    "interval": 10,
+    "timeoutMs": 1000,
+    "triggerOnError": true
+  },
+  "turns": [
+    {
+      "turnIndex": 3,
+      "outcome": "error",
+      "llmMessages": [
+        { "role": "system", "content": "You are the executor.", "timestamp": 1 },
+        {
+          "role": "user",
+          "content": [{ "type": "text", "text": "Run the auth suite and fix what fails." }],
+          "timestamp": 2
+        },
+        {
+          "role": "assistant",
+          "content": [
+            { "type": "text", "text": "The run failed: auth.spec.ts:42 expected 200 got 401." }
+          ],
+          "timestamp": 3
+        },
+        {
+          "role": "user",
+          "content": [{ "type": "text", "text": "The turn errored before any fix landed." }],
+          "timestamp": 4
+        }
+      ],
+      "signals": {
+        "turnTokens": 1200,
+        "contextPercent": 31,
+        "outcome": "error",
+        "toolNames": []
+      },
+      "facade": [
+        {
+          "stopReason": "stop",
+          "content": [
+            {
+              "type": "text",
+              "text": "auth.spec.ts:42 fails because the request omits the auth header. Attach the bearer token before the client retries."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": { "commits": 1, "adviceIncludes": "auth.spec.ts:42" },
+  "scores": ["drift-caught"]
+}

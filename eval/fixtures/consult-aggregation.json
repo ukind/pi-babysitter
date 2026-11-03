@@ -1,0 +1,66 @@
+{
+  "name": "consult-aggregation",
+  "pillar": "FR6",
+  "config": {
+    "model": "stub/stub-model",
+    "interval": 10,
+    "timeoutMs": 1000,
+    "specialistModel": "stub/stub-model",
+    "specialistSystemPrompt": "Answer as a domain specialist.",
+    "maxToolRounds": 3
+  },
+  "turns": [
+    {
+      "turnIndex": 9,
+      "outcome": "completed",
+      "llmMessages": [
+        { "role": "system", "content": "You are the executor.", "timestamp": 1 },
+        {
+          "role": "user",
+          "content": [{ "type": "text", "text": "The indexer lags on large repos. Why?" }],
+          "timestamp": 2
+        },
+        {
+          "role": "assistant",
+          "content": [
+            { "type": "text", "text": "I profiled the walk; the lag grows with repo size." }
+          ],
+          "timestamp": 3
+        }
+      ],
+      "facade": [
+        {
+          "stopReason": "toolUse",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-1",
+              "name": "consult_specialist",
+              "arguments": { "question": "What is the usual cause of indexer lag on large repos?" }
+            }
+          ]
+        },
+        {
+          "stopReason": "stop",
+          "content": [
+            {
+              "type": "text",
+              "text": "Unbounded directory walks without a VCS ignore filter are the usual cause."
+            }
+          ]
+        },
+        {
+          "stopReason": "stop",
+          "content": [
+            {
+              "type": "text",
+              "text": "The walk visits node_modules and .git. Add the VCS ignore filter before the walk and re-measure."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": { "commits": 1, "facadeCalls": 3 },
+  "scores": ["single-entry-aggregation"]
+}

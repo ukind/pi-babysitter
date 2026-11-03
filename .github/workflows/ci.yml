@@ -22,3 +22,6 @@ jobs:
       - run: npm test
       - run: npm run lint
       - run: npm run typecheck
+      # FR9: the eval score gate. A failing score fails the job: the runner sets
+      # process.exitCode when any fixture errors or any score misses.
+      - run: npm run eval

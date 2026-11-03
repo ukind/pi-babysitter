@@ -1,0 +1,94 @@
+{
+  "name": "budget-window",
+  "pillar": "FR7",
+  "config": {
+    "model": "stub/stub-model",
+    "interval": 10,
+    "timeoutMs": 1000,
+    "tokenBudget": 500
+  },
+  "systemTexts": ["SYSTEM ONE", "SYSTEM TWO"],
+  "turns": [
+    {
+      "turnIndex": 9,
+      "outcome": "completed",
+      "llmMessages": [
+        {
+          "role": "system",
+          "content": "SYSTEM ONE: prefer plain functions.",
+          "timestamp": 1
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass. u1: the retry helper widens the loop and the tests still pass."
+            }
+          ],
+          "timestamp": 2
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "a1: the loop now retries on every failure and the helper grew another branch. a1: the loop now retries on every failure and the helper grew another branch. a1: the loop now retries on every failure and the helper grew another branch. a1: the loop now retries on every failure and the helper grew another branch. a1: the loop now retries on every failure and the helper grew another branch. a1: the loop now retries on every failure and the helper grew another branch. a1: the loop now retries on every failure and the helper grew another branch. a1: the loop now retries on every failure and the helper grew another branch."
+            }
+          ],
+          "timestamp": 3
+        },
+        {
+          "role": "system",
+          "content": "SYSTEM TWO: log with the module tag.",
+          "timestamp": 4
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "u2: the second pass rewrote the retry gate again and the suite is slower. u2: the second pass rewrote the retry gate again and the suite is slower. u2: the second pass rewrote the retry gate again and the suite is slower. u2: the second pass rewrote the retry gate again and the suite is slower. u2: the second pass rewrote the retry gate again and the suite is slower. u2: the second pass rewrote the retry gate again and the suite is slower. u2: the second pass rewrote the retry gate again and the suite is slower."
+            }
+          ],
+          "timestamp": 5
+        },
+        {
+          "role": "assistant",
+          "content": [
+            {
+              "type": "text",
+              "text": "a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow."
+            }
+          ],
+          "timestamp": 6
+        },
+        {
+          "role": "user",
+          "content": [
+            {
+              "type": "text",
+              "text": "Latest note: the retry loop stalls on the third pass."
+            }
+          ],
+          "timestamp": 7
+        }
+      ],
+      "facade": [
+        {
+          "stopReason": "stop",
+          "content": [
+            {
+              "type": "text",
+              "text": "The retry gate nests three deep and the helper carries two branches. Flatten it: one retry path, one cap, one log line."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": {
+    "commits": 1
+  },
+  "scores": ["budget-respected"]
+}

@@ -1,4 +1,4 @@
-import type { Api, AssistantMessage, Message, Model } from "@earendil-works/pi-ai";
+import type { Api, AssistantMessage, Message, Model, ToolCall } from "@earendil-works/pi-ai";
 
 /**
  * advisor.ts — the advisor model call.
@@ -22,13 +22,104 @@ interface ModelRegistryLike {
 /** The auth-aware completion facade Pi keeps behind the registry's private `runtime` slot. */
 type CompleteSimpleFn = (
   model: Model<Api>,
-  context: { systemPrompt: string; messages: Message[]; tools: [] },
+  context: { systemPrompt: string; messages: Message[]; tools?: AdvisorTool[] },
   options?: { signal?: AbortSignal; reasoning?: string; sessionId?: string },
 ) => Promise<AssistantMessage>;
 
 export type AdvisorResolution = { ok: true; model: Model<Api> } | { ok: false; reason: string };
 
 export type AdvisorOutcome = { ok: true; text: string } | { ok: false; reason: string };
+
+/** The structural shape of one advisor-declared tool (pi-ai Tool, duck-typed). */
+export interface AdvisorTool {
+  name: string;
+  description: string;
+  parameters: unknown;
+}
+
+/** One tool execution: the text to replay, or why it refused. */
+export type ToolExecutionResult = { ok: true; text: string } | { ok: false; reason: string };
+
+/** The seam-facing executor the loop calls once per ToolCall block. */
+export type ToolExecutor = (name: string, args: unknown) => ToolExecutionResult;
+
+/**
+ * The loop's round cap when the caller passes none.
+ *
+ * Deliberately the SAME number as DEFAULT_CONFIG.maxToolRounds (config.ts):
+ * the offline suite pins the parity (t25), because this module imports no
+ * sibling and cannot read the constant.
+ */
+const DEFAULT_MAX_TOOL_ROUNDS = 3;
+
+/**
+ * Pinned refusal for a toolUse naming a tool this fire never declared (t26).
+ * Reachable only in specialist-only mode (the declared list is exactly the
+ * consult tool and no executor is injected); the refusal replays as an errored
+ * toolResult so the advisor self-corrects instead of failing the fire.
+ *
+ * Lands HERE, not with the rest of the FR6 surface in Phase 6: the merged loop
+ * fence below calls it in its final else arm, and this phase's tsc --noEmit
+ * gate compiles that call (Step 4 reviewer fix).
+ */
+export function undeclaredToolRefusalFor(name: string): string {
+  return `advisor tool "${name}" is not declared; use only the tools declared for this fire`;
+}
+
+// --- FR6: the specialist consult surface (Slice 6). ---
+
+/** The specialist consult's declared tool name. */
+export const CONSULT_SPECIALIST_NAME = "consult_specialist";
+
+/**
+ * The declared consult tool, appended to the request's tool list when a
+ * specialist is configured. Plain JSON-Schema parameters keep typebox out of
+ * the offline test's module graph (the READ_FILE_TOOL decision).
+ */
+export const CONSULT_SPECIALIST_TOOL: AdvisorTool = {
+  name: CONSULT_SPECIALIST_NAME,
+  description:
+    "Consult the on-demand specialist model with one focused question. Use it when the " +
+    "review needs domain expertise you lack. One question per call; the answer arrives " +
+    "as the tool result.",
+  parameters: {
+    type: "object",
+    properties: {
+      question: {
+        type: "string",
+        description: "The focused question for the specialist, with the context it needs.",
+      },
+    },
+    required: ["question"],
+  },
+};
+
+/** Pinned refusal for a malformed question argument (t26). */
+export const CONSULT_QUESTION_REFUSAL =
+  'advisor consult refused: "question" must be a non-empty string';
+
+/** Pinned refusal for a consult requested with no specialist configured (t26). */
+export const CONSULT_UNCONFIGURED_REFUSAL =
+  "advisor consult refused: no specialist model is configured";
+
+/**
+ * Joins the fire's base advice and each specialist answer into ONE text.
+ *
+ * The longest newline run inside the separator is two, so stripAdvisorMarkup's
+ * 3-newline collapse (the /\n{3,}/g pass) can never rewrite a join — t26 pins
+ * the aggregated bytes through the strip itself. The separator carries no
+ * angle-bracket vocabulary, so no strip tier can match it either.
+ */
+export const CONSULT_SECTION_SEPARATOR = "\n\n---\n\n";
+
+/** Header line above each aggregated specialist answer; t26 pins it. */
+export const CONSULT_ANSWER_HEADER = "Specialist consult answer:";
+
+/** What the seam hands runAdvisor for the optional specialist leg. */
+export interface SpecialistConfig {
+  model: Model<Api>;
+  systemPrompt: string;
+}
 
 /**
  * Resolve the advisor model from an already-parsed provider and modelId.
@@ -266,6 +357,64 @@ export async function callWithDeadline<T>(
 }
 
 /**
+ * The specialist leg (FR6): ONE extra completeSimple call under the fire's
+ * remaining budget.
+ *
+ * The leg is deliberately TOOL-FREE: the specialist answers in text or not at
+ * all, so no second tool loop and no recursion can start here. Its failure is
+ * the base-only fail arm: every outcome comes back as data for the loop to
+ * replay as a toolResult, and the fire never fails because the specialist did.
+ * A provider failure RESOLVES with stopReason "error" (the lazyStream shape),
+ * checked before any text extraction. The shared clock's own rejection
+ * ("advisor call timed out after Xms") surfaces through the catch verbatim —
+ * the leg spends the fire's remaining budget, never a fresh one.
+ */
+async function runConsultLeg(
+  completeSimple: CompleteSimpleFn,
+  specialist: SpecialistConfig,
+  args: unknown,
+  budgetMs: number,
+  externalSignal?: AbortSignal,
+): Promise<ToolExecutionResult> {
+  const question = (args as { question?: unknown } | null | undefined)?.question;
+  if (typeof question !== "string" || question.trim() === "") {
+    return { ok: false, reason: CONSULT_QUESTION_REFUSAL };
+  }
+  try {
+    const response = await callWithDeadline(
+      (signal) =>
+        completeSimple(
+          specialist.model,
+          {
+            systemPrompt: specialist.systemPrompt,
+            messages: [
+              {
+                role: "user",
+                content: [{ type: "text", text: question }],
+                timestamp: Date.now(),
+              },
+            ],
+          },
+          { signal },
+        ),
+      budgetMs,
+      externalSignal,
+    );
+    if (response.stopReason !== "stop") {
+      return {
+        ok: false,
+        reason: response.errorMessage || `specialist stopped with ${response.stopReason}`,
+      };
+    }
+    const text = extractAdvisorText(response);
+    if (!text) return { ok: false, reason: "specialist returned no text" };
+    return { ok: true, text };
+  } catch (err) {
+    return { ok: false, reason: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+/**
  * Call the advisor and return its text, or the reason it could not be called.
  *
  * Never throws. Every failure path is fail-open: the caller commits no entry and
@@ -305,6 +454,14 @@ export async function runAdvisor(params: {
   messages: Message[];
   timeoutMs: number;
   signal?: AbortSignal;
+  /** Declared advisor tools. Absent or empty keeps the single-call shape byte-identical. */
+  tools?: AdvisorTool[];
+  /** The executor for ToolCall blocks. Required with tools; without it the loop never arms. */
+  executeTool?: ToolExecutor;
+  /** Tool-use rounds per fire. Defaults to DEFAULT_MAX_TOOL_ROUNDS (t25 pins the parity). */
+  maxToolRounds?: number;
+  /** The optional specialist (FR6). Absent keeps consult_specialist undeclared. */
+  specialist?: SpecialistConfig;
 }): Promise<AdvisorOutcome> {
   // This guard stays BEFORE the try: it is a fail-fast precondition, not a transport
   // failure for the deadline machinery to own. t16 pins the exact reason string, and the
@@ -316,25 +473,130 @@ export async function runAdvisor(params: {
     return { ok: false, reason: "no auth-aware completion facade on this host" };
   }
   try {
-    const response = await callWithDeadline(
-      (signal) =>
-        completeSimple(
-          params.model,
-          { systemPrompt: params.systemPrompt, messages: params.messages, tools: [] },
-          { signal },
-        ),
-      params.timeoutMs,
-      params.signal,
-    );
-    if (response.stopReason !== "stop") {
+    // FR4/FR6: the loop arms when a sandbox tool list OR a specialist arrives. An
+    // unarmed call (neither) passes tools: [] exactly as before, so every pre-FR4
+    // behavior — including each t16 pin — is untouched by construction.
+    const executeTool = params.executeTool;
+    const consultArmed = params.specialist !== undefined;
+    const loopArmed = (params.tools?.length ?? 0) > 0 || consultArmed;
+    const maxRounds = params.maxToolRounds ?? DEFAULT_MAX_TOOL_ROUNDS;
+    const requestTools = !loopArmed
+      ? []
+      : consultArmed
+        ? [...(params.tools ?? []), CONSULT_SPECIALIST_TOOL]
+        : (params.tools ?? []);
+    // The shared per-fire deadline (the settled decision): the clock starts once,
+    // and every round — main calls and consult legs alike — races the REMAINING
+    // budget, never a fresh one. Round 1 gets the full budget, so an unarmed
+    // call's timing is identical to the old shape.
+    const startedAt = Date.now();
+    let conversation = [...params.messages];
+    // FR6: successful consult answers aggregate into the committed text, in fire order.
+    const consultAnswers: string[] = [];
+    let rounds = 0;
+    for (;;) {
+      // Each round races the REMAINING budget through callWithDeadline — there is
+      // deliberately NO loop-top early-return on a spent budget: the deadline
+      // already bounds every round (a hung round dies at whatever remains; a
+      // round that resolves instantly still wins the race), and the t26 pins
+      // require the post-leg round to run even when the leg spent the budget.
+      // The floor at 0 keeps a spent budget from reaching setTimeout as a
+      // negative delay: the round still races a zero timer, so a hung call dies
+      // immediately and an instant call still wins.
+      const remaining = Math.max(0, params.timeoutMs - (Date.now() - startedAt));
+      const response = await callWithDeadline(
+        (signal) =>
+          completeSimple(
+            params.model,
+            { systemPrompt: params.systemPrompt, messages: conversation, tools: requestTools },
+            { signal },
+          ),
+        remaining,
+        params.signal,
+      );
+      // A mid-loop toolUse is CONSUMED here: the call blocks execute, the results
+      // replay as toolResult messages, and the loop continues. No injected executor
+      // is required at this gate — consult rounds are self-contained — but a call
+      // naming a tool this fire never declared refuses per call, so the advisor
+      // self-corrects instead of failing the fire. Once the rounds are spent
+      // (rounds >= maxRounds), a toolUse falls through to the terminal gate below
+      // and rejects with the SAME pinned reason the single-call path always
+      // produced — no extra grace call spent on a tool-happy advisor.
+      if (response.stopReason === "toolUse" && loopArmed && rounds < maxRounds) {
+        const calls = response.content.filter(
+          (block): block is ToolCall => block.type === "toolCall",
+        );
+        if (calls.length === 0) {
+          // Degenerate: the provider claims toolUse but sent no call blocks.
+          return { ok: false, reason: "advisor stopped with toolUse" };
+        }
+        rounds += 1;
+        // The role is NORMALIZED on replay: a real AssistantMessage already carries
+        // role "assistant", and the override makes the replayed conversation a valid
+        // Message[] even when a scripted or degraded response omits the field.
+        conversation = [...conversation, { ...response, role: "assistant" }];
+        for (const call of calls) {
+          let result: ToolExecutionResult;
+          if (call.name === CONSULT_SPECIALIST_NAME) {
+            if (!params.specialist) {
+              result = { ok: false, reason: CONSULT_UNCONFIGURED_REFUSAL };
+            } else {
+              // Fresh remaining-at-call budget: elapsed includes this round's main call.
+              const legBudget = params.timeoutMs - (Date.now() - startedAt);
+              result =
+                legBudget <= 0
+                  ? { ok: false, reason: `advisor call timed out after ${params.timeoutMs}ms` }
+                  : await runConsultLeg(
+                      completeSimple,
+                      params.specialist,
+                      call.arguments,
+                      legBudget,
+                      params.signal,
+                    );
+            }
+            if (result.ok) consultAnswers.push(result.text);
+          } else if (executeTool) {
+            // The executor never throws (the sandbox's contract).
+            result = executeTool(call.name, call.arguments);
+          } else {
+            result = { ok: false, reason: undeclaredToolRefusalFor(call.name) };
+          }
+          conversation = [
+            ...conversation,
+            {
+              role: "toolResult",
+              toolCallId: call.id,
+              toolName: call.name,
+              content: [{ type: "text", text: result.ok ? result.text : result.reason }],
+              isError: !result.ok,
+              timestamp: Date.now(),
+            },
+          ];
+        }
+        continue;
+      }
+      // The terminal gate is UNCHANGED: stop-only admission. Provider errors still
+      // RESOLVE with stopReason "error" and errorMessage is checked first.
+      if (response.stopReason !== "stop") {
+        return {
+          ok: false,
+          reason: response.errorMessage || `advisor stopped with ${response.stopReason}`,
+        };
+      }
+      const text = extractAdvisorText(response);
+      if (!text) return { ok: false, reason: "advisor returned no text" };
+      // FR6 aggregation: the fire's advice and every successful specialist answer
+      // land as ONE text, base first, consults in fire order. The separator's
+      // longest newline run is two, so the strip's 3-newline collapse can never
+      // rewrite the join (t26 pins the exact bytes through stripAdvisorMarkup).
+      if (consultAnswers.length === 0) return { ok: true, text };
       return {
-        ok: false,
-        reason: response.errorMessage || `advisor stopped with ${response.stopReason}`,
+        ok: true,
+        text: [text, ...consultAnswers.map((answer) => `${CONSULT_ANSWER_HEADER}\n${answer}`)].join(
+          CONSULT_SECTION_SEPARATOR,
+        ),
       };
     }
-    const text = extractAdvisorText(response);
-    if (!text) return { ok: false, reason: "advisor returned no text" };
-    return { ok: true, text };
   } catch (err) {
     return { ok: false, reason: err instanceof Error ? err.message : String(err) };
   }

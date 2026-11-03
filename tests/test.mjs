@@ -13,46 +13,92 @@
  * distinguish them:
  *   - whether pi's jiti resolves the extensionless sibling imports index.ts uses. The
  *     form is proven live by simple-english/index.ts:16, but plain node cannot load
- *     index.ts at all, so this suite imports the six sibling modules directly.
+ *     index.ts at all, so this suite imports the nine sibling modules directly.
  *   - the real advisor call. Every advisor test stubs the completion facade.
  *
- * config.ts, guard.ts, prompt.ts, advisor.ts, report.ts, and plan-turn.ts import no
- * sibling at runtime, so this file resolves nothing from @earendil-works/* — a
- * MODULE_NOT_FOUND here means a runtime import leaked into one of them.
+ * config.ts, guard.ts, memory.ts, prompt.ts, advisor.ts, report.ts, plan-turn.ts,
+ * triggers.ts, and sandbox.ts import no sibling at runtime, so this file resolves
+ * nothing from @earendil-works/* — a MODULE_NOT_FOUND here means a runtime import leaked
+ * into one of them.
+ *
+ * eval/runner.mjs is the second offline runner (the sanctioned split, TECH_DEBT_AUDIT.md):
+ * golden fixtures per pillar replay the full pipeline — planGate, buildAdvisorMessages,
+ * runAdvisor over a scripted facade, planCommit — and CI gates on the score table.
+ * Fixture-style end-to-end scenarios live there; this file stays the unit-pin suite and
+ * nothing pinned moves.
  */
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import {
+  CONSULT_ANSWER_HEADER,
+  CONSULT_QUESTION_REFUSAL,
+  CONSULT_SECTION_SEPARATOR,
+  CONSULT_SPECIALIST_NAME,
+  CONSULT_SPECIALIST_TOOL,
+  CONSULT_UNCONFIGURED_REFUSAL,
   callWithDeadline,
   extractAdvisorText,
   getRuntimeCompleteSimple,
   resolveAdvisorModel,
   runAdvisor,
   stripAdvisorMarkup,
+  undeclaredToolRefusalFor,
 } from "../advisor.ts";
 import {
   CONFIG_URL,
   DEFAULT_CONFIG,
   loadConfig,
   MAX_INTERVAL,
+  MAX_MEMORY_CAP,
   MAX_TIMEOUT_MS,
+  MAX_TOKEN_BUDGET,
+  MAX_TOOL_ROUNDS,
   MIN_INTERVAL,
+  MIN_MEMORY_CAP,
   MIN_TIMEOUT_MS,
+  MIN_TOKEN_BUDGET,
+  MIN_TOOL_ROUNDS,
   parseModelKey,
   resetWarnOnceForTest,
   shouldFire,
 } from "../config.ts";
 import { CHILD_MARKER_PATTERN, isChildSession } from "../guard.ts";
-import { buildCorrection, planCommit, planGate } from "../plan-turn.ts";
+import {
+  capEntries,
+  digestMessage,
+  MEMORY_DIR_URL,
+  projectKeyFor,
+  readEntries,
+  recordAdvice,
+  resetMemoryWarnOnceForTest,
+} from "../memory.ts";
+import {
+  buildCorrection,
+  planCommit,
+  planGate,
+  planHostSupport,
+  planSettle,
+  stampDetails,
+} from "../plan-turn.ts";
 import {
   ADVISOR_NUDGE,
+  applyTokenBudget,
+  BUDGET_FOLD_MARKER_PREFIX,
   buildAdvisorMessages,
   ensureUserTail,
+  estimateMessageTokens,
   stripToolDeclarations,
 } from "../prompt.ts";
 import { reportFailure } from "../report.ts";
+import {
+  createSandbox,
+  planRead,
+  READ_FILE_TOOL,
+  SANDBOX_MAX_BYTES,
+  sandboxRefusalFor,
+} from "../sandbox.ts";
 import { syntaxCheck } from "../scripts/hooks/feedback.mjs";
 import { evaluate } from "../scripts/hooks/gate.mjs";
 import {
@@ -61,6 +107,7 @@ import {
   parseHookStdin,
   readHookField,
 } from "../scripts/hooks/lib.mjs";
+import { parseRiskyTools, planTrigger, triggersArmed } from "../triggers.ts";
 
 const assert = (cond, msg) => {
   if (!cond) {
@@ -108,6 +155,11 @@ function captureWarn(fn) {
   }
   return seen;
 }
+
+// JSON of messages with the timestamp key dropped: the one field two back-to-back
+// buildAdvisorMessages calls can legitimately differ on (each nudge stamps its own
+// Date.now(), so a millisecond boundary between calls is legal, not a divergence).
+const shapeJson = (messages) => JSON.stringify(messages.map(({ timestamp: _ts, ...rest }) => rest));
 
 const Q = String.fromCharCode(34);
 const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
@@ -365,7 +417,8 @@ assert(parseModelKey("/b") === undefined, "t8: a leading separator returns undef
 
 // --- 9. plan-turn.ts: the extracted decision cores. The early-outs must keep the exact
 //        order and laziness of the pre-extraction index.ts — an off-cadence turn invokes
-//        no thunk at all — and the notify arms must carry the exact reportFailure
+//        no thunk beyond the trigger (t21 pins the trigger's cadence-miss-only
+//        economics) — and the notify arms must carry the exact reportFailure
 //        formats, so the seam can stay a dumb dispatcher.
 const gateArgs = (overrides = {}) => ({
   enabled: true,
@@ -678,6 +731,27 @@ assert(
 assert(
   !CHILD_MARKER_PATTERN.test("<active_agent>"),
   "t11: a tag with no name attribute is rejected",
+);
+assert(
+  !CHILD_MARKER_PATTERN.test('<active_agent name="..."/>'),
+  "t11: the AGENTS.md prose placeholder (dots, no alphanumeric) is rejected",
+);
+assert(
+  !isChildSession([
+    {
+      role: "system",
+      content: "Skips child sessions via the <active_agent name='...'/> marker veto.",
+    },
+  ]),
+  "t11: gate documentation riding the system prompt stays inert",
+);
+assert(
+  CHILD_MARKER_PATTERN.test(marker("aop.worker")),
+  "t11: a legitimate child marker with a dotted agent name is caught",
+);
+assert(
+  isChildSession([{ role: "system", content: "", sections: { preamble: marker("aop.worker") } }]),
+  "t11: a dotted-name child marker vetoes the session",
 );
 
 // --- 13. model resolution: an uncredentialed provider is skipped, not thrown.
@@ -1253,4 +1327,1762 @@ for (const [name, response, check] of runCases) {
     !silentFail.ok && silentFail.detail === "exit code 1",
     "t20: a non-zero exit with no stderr names the exit code",
   );
+}
+
+// --- 21. FR3 triggers: planTrigger arm order, planGate integration, host support.
+{
+  const signals = (overrides = {}) => ({
+    turnTokens: null,
+    contextPercent: null,
+    outcome: "completed",
+    toolNames: [],
+    ...overrides,
+  });
+  const thresholds = (overrides = {}) => ({
+    minNewTokens: 0,
+    contextPercent: 0,
+    onError: false,
+    riskyTools: [],
+    ...overrides,
+  });
+  assert(
+    planTrigger(signals(), thresholds()).action === "none",
+    "t21: nothing armed fires nothing",
+  );
+  assert(
+    planTrigger(signals({ outcome: "error" }), thresholds({ onError: true })).signal === "error",
+    "t21: the error signal fires first when armed",
+  );
+  assert(
+    planTrigger(
+      signals({ outcome: "error", turnTokens: 99999 }),
+      thresholds({ onError: true, minNewTokens: 1000 }),
+    ).signal === "error",
+    "t21: trouble outcome outranks token growth",
+  );
+  assert(
+    planTrigger(
+      signals({ turnTokens: 20000, contextPercent: 90 }),
+      thresholds({ minNewTokens: 1000, contextPercent: 50 }),
+    ).signal === "tokens",
+    "t21: token growth outranks context pressure",
+  );
+  assert(
+    planTrigger(
+      signals({ contextPercent: 90, toolNames: ["git push"] }),
+      thresholds({ contextPercent: 50, riskyTools: ["git push"] }),
+    ).signal === "pressure",
+    "t21: context pressure outranks risky tools",
+  );
+  assert(
+    planTrigger(
+      signals({ toolNames: ["read", "git push"] }),
+      thresholds({ riskyTools: ["git push", "rm"] }),
+    ).signal === "risky-tool",
+    "t21: a risky tool fires last",
+  );
+  assert(
+    planTrigger(signals({ turnTokens: 10 }), thresholds({ minNewTokens: 1000 })).action === "none",
+    "t21: a sub-threshold signal does not fire",
+  );
+  assert(
+    planTrigger(signals({ outcome: "aborted" }), thresholds({ onError: true })).action === "none",
+    "t21: an aborted turn never fires the error signal",
+  );
+  assert(
+    planTrigger(signals({ toolNames: ["git push"] }), thresholds({ riskyTools: ["gitpush"] }))
+      .action === "none",
+    "t21: risky-tool matching is exact, not substring",
+  );
+  assert(
+    JSON.stringify(parseRiskyTools(" git push , rm , ")) === JSON.stringify(["git push", "rm"]),
+    "t21: parseRiskyTools trims and drops empties",
+  );
+  assert(triggersArmed(thresholds()) === false, "t21: all-off thresholds are unarmed");
+  assert(
+    triggersArmed(thresholds({ minNewTokens: 1 })) === true,
+    "t21: one armed signal is enough",
+  );
+}
+{
+  // planGate integration: the trigger arm sits between no-model and cadence.
+  let triggerCalls = 0;
+  const fire = () => {
+    triggerCalls++;
+    return { action: "fire", signal: "tokens", detail: "20000" };
+  };
+  const latch = { value: -1 };
+  let marks = 0;
+  const fired = planGate(
+    gateArgs({
+      turnIndex: 0,
+      interval: 2,
+      trigger: fire,
+      markFired: (i) => {
+        marks++;
+        latch.value = i;
+      },
+    }),
+  );
+  assert(fired.action === "consult", "t21: a trigger fire consults ahead of cadence");
+  assert(
+    triggerCalls === 1 && marks === 1 && latch.value === 0,
+    "t21: the trigger fire spends the latch once",
+  );
+  triggerCalls = 0;
+  planGate(gateArgs({ turnIndex: 1, interval: 2, trigger: fire }));
+  assert(triggerCalls === 0, "t21: an on-cadence turn invokes no trigger thunk");
+  marks = 0;
+  const quiet = planGate(
+    gateArgs({
+      turnIndex: 0,
+      interval: 2,
+      trigger: () => ({ action: "none", reason: "no signal" }),
+      markFired: () => {
+        marks++;
+      },
+    }),
+  );
+  assert(
+    quiet.action === "skip" && marks === 0,
+    "t21: an untriggered cadence miss skips without spending",
+  );
+  const errorFired = planGate(
+    gateArgs({
+      turnIndex: 0,
+      interval: 2,
+      outcome: "error",
+      trigger: () => ({ action: "fire", signal: "error", detail: "error" }),
+    }),
+  );
+  assert(errorFired.action === "consult", "t21: an error-triggered fire bypasses the outcome veto");
+  assert(
+    planGate(gateArgs({ turnIndex: 1, interval: 2, outcome: "error" })).action === "skip",
+    "t21: a cadence-due errored turn still skips (the F007 slide)",
+  );
+  assert(
+    planGate(
+      gateArgs({
+        turnIndex: 0,
+        interval: 2,
+        outcome: "aborted",
+        trigger: () => ({ action: "fire", signal: "tokens", detail: "1" }),
+      }),
+    ).action === "skip",
+    "t21: an aborted turn skips even when another signal fired",
+  );
+  assert(
+    planGate(gateArgs({ turnIndex: 0, interval: 2, trigger: undefined })).action === "skip",
+    "t21: an unarmed config skips a cadence miss with no trigger",
+  );
+}
+{
+  // planHostSupport: the 1.4 boundary surface vs the 0.79 bare emit.
+  assert(
+    planHostSupport("completed", { llmMessages: [] }).supported === true,
+    "t21: a 1.4-shaped event is supported",
+  );
+  const stale = planHostSupport(undefined, undefined);
+  assert(
+    stale.supported === false && /predate 1\.4/.test(stale.message),
+    "t21: a bare 0.79 emit is rejected with the pinned message",
+  );
+  assert(
+    planHostSupport(null, { llmMessages: [] }).supported === false,
+    "t21: a null outcome is rejected",
+  );
+  assert(
+    planHostSupport("completed", null).supported === false,
+    "t21: a missing context is rejected",
+  );
+}
+
+// --- 21c. the four trigger fields ride the same clamp/narrowing doors (extends t5/t7).
+{
+  const clamped = withConfig(
+    JSON.stringify({
+      triggerMinNewTokens: -5,
+      triggerContextPercent: 101,
+      triggerOnError: "yes",
+      triggerRiskyTools: 42,
+    }),
+    () => loadConfig(),
+  );
+  assert(
+    clamped.triggerMinNewTokens === 0,
+    "t21c: a negative triggerMinNewTokens clamps to 0 (off)",
+  );
+  assert(
+    clamped.triggerContextPercent === 100,
+    "t21c: an over-100 triggerContextPercent clamps to 100",
+  );
+  assert(
+    clamped.triggerOnError === false,
+    "t21c: a string triggerOnError falls back to the default",
+  );
+  assert(
+    clamped.triggerRiskyTools === "",
+    "t21c: a numeric triggerRiskyTools falls back to the default",
+  );
+  // Raw string, not an object literal: JSON has no Infinity, so an object literal
+  // would serialize 1e999 to null and the clamp door would never see it (the t5 idiom).
+  const warns = captureWarn(() =>
+    withConfig('{"triggerMinNewTokens": 1e999, "triggerContextPercent": -1}', () => loadConfig()),
+  );
+  assert(warns.length === 1, "t21c: two clamped trigger fields share the warn-once latch");
+  const armed = withConfig(
+    JSON.stringify({ triggerMinNewTokens: 5000, triggerRiskyTools: "git push" }),
+    () => loadConfig(),
+  );
+  assert(
+    armed.triggerMinNewTokens === 5000 && armed.triggerRiskyTools === "git push",
+    "t21c: armed values survive",
+  );
+}
+
+// --- 22. FR7 prompt budget: the chars/4 estimate, the fold, the window order, and the
+//         tokenBudget config door. t10's one-arg buildAdvisorMessages call stays green:
+//         the default budget is 0 and the fold is the identity.
+{
+  const m = (role, text, timestamp) =>
+    role === "system"
+      ? { role, content: text, timestamp }
+      : { role, content: [{ type: "text", text }], timestamp };
+
+  // The estimate is JSON-rendered characters / 4, rounded up.
+  const probe = m("user", "abcd", 1);
+  assert(
+    estimateMessageTokens(probe) === Math.ceil(JSON.stringify(probe).length / 4),
+    "t22: the estimate is JSON-rendered characters / 4, rounded up",
+  );
+
+  // Off is the identity: 0, negative, and non-finite budgets return the SAME array.
+  const small = [m("system", "s", 1), m("user", "u", 2)];
+  assert(applyTokenBudget(small, 0) === small, "t22: budget 0 is the identity");
+  assert(applyTokenBudget(small, -5) === small, "t22: a negative budget is the identity");
+  assert(applyTokenBudget(small, Number.NaN) === small, "t22: a non-finite budget is the identity");
+  // The empty-context pin captures the reference first: two array literals are never
+  // strictly equal, and the identity claim is same-array, not deep equality.
+  const empty = [];
+  assert(applyTokenBudget(empty, 5000) === empty, "t22: an empty context is the identity");
+  assert(applyTokenBudget(small, 100000) === small, "t22: an under-budget context is the identity");
+
+  // A fold that fits: systems kept, tail verbatim, marker rides the first folded slot.
+  const sys1 = m("system", "S1".repeat(50), 1);
+  const u1 = m("user", "u1".repeat(60), 2);
+  const a1 = m("assistant", "a1".repeat(60), 3);
+  const u2 = m("user", "u2".repeat(60), 4);
+  const tail = m("assistant", "tail".repeat(5), 5);
+  const sizes = [sys1, u1, a1, u2, tail].map(estimateMessageTokens);
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  // Fits only once BOTH u1 and a1 are folded. The +80 slack stays under the identity
+  // door (budget = total - 15 < total) yet clears the 64-token marker allowance only
+  // after the second fold: folding u1 alone leaves 64 <= 80 - sizes[2] false while
+  // sizes[2] > 16, and folding a1 makes 64 <= 80 true, so the walk stops there.
+  const budget = total - sizes[1] - sizes[2] + 80;
+  const folded = applyTokenBudget([sys1, u1, a1, u2, tail], budget);
+  assert(folded.length === 4, "t22: the fold replaces two messages with one marker");
+  assert(folded[0].role === "user", "t22: the marker is a user message");
+  assert(
+    folded[0].content[0].text.startsWith(BUDGET_FOLD_MARKER_PREFIX),
+    "t22: the marker carries the pinned prefix",
+  );
+  assert(
+    /2 earliest message\(s\)/.test(folded[0].content[0].text),
+    "t22: the marker names the folded count",
+  );
+  assert(folded[0].timestamp === 2, "t22: the marker rides the first folded timestamp");
+  assert(folded[1] === sys1, "t22: the system message survives in place");
+  assert(folded[2] === u2, "t22: the kept messages stay byte-identical");
+  assert(folded[3] === tail, "t22: the last message never folds");
+
+  // Best-effort: systems plus tail alone can exceed the budget; the fold still returns
+  // the invariant-respecting shape instead of throwing or dropping a system message.
+  const overflow = [
+    m("system", "S".repeat(400), 1),
+    m("user", "m".repeat(200), 2),
+    m("assistant", "t".repeat(400), 3),
+  ];
+  const starved = applyTokenBudget(overflow, 10);
+  assert(starved.length === 3, "t22: a starved budget folds what it may and keeps the shape");
+  assert(
+    starved[0].role === "user" && starved[0].content[0].text.startsWith(BUDGET_FOLD_MARKER_PREFIX),
+    "t22: the starved fold still places the marker",
+  );
+  assert(starved[1] === overflow[0], "t22: the system message survives a starved fold");
+  assert(starved[2] === overflow[2], "t22: the tail survives a starved fold");
+
+  // Nothing foldable: system-only and lone-message contexts are the identity even over budget.
+  const onlySystems = [m("system", "a".repeat(400), 1), m("system", "b".repeat(400), 2)];
+  assert(
+    applyTokenBudget(onlySystems, 10) === onlySystems,
+    "t22: a system-only context never folds",
+  );
+  const lone = [m("user", "x".repeat(400), 1)];
+  assert(
+    applyTokenBudget(lone, 10) === lone,
+    "t22: the last message never folds, so a lone context is the identity",
+  );
+
+  // The window through buildAdvisorMessages: the default 0 equals an explicit 0.
+  const plain = buildAdvisorMessages([sys1, a1]);
+  const explicit = buildAdvisorMessages([sys1, a1], 0);
+  assert(
+    plain.length === explicit.length && shapeJson(plain) === shapeJson(explicit),
+    "t22: the default budget equals an explicit 0",
+  );
+  assert(plain.length === 3, "t22: with no budget the nudge still appends (t10 re-pin)");
+
+  // Strip, fold, tail: a folding context still ends on the user nudge.
+  const windowed = buildAdvisorMessages(
+    [m("user", "u".repeat(200), 1), m("assistant", "a".repeat(200), 2)],
+    10,
+  );
+  assert(
+    windowed.at(-1).content[0].text === ADVISOR_NUDGE,
+    "t22: the nudge is appended after a fold (strip, fold, tail order)",
+  );
+
+  // The strip still runs inside the budgeted pipeline: the delta key is gone.
+  const fatDelta = {
+    role: "system",
+    content: "s",
+    toolsAdded: [{ name: "x".repeat(400) }],
+    timestamp: 1,
+  };
+  const budgeted = buildAdvisorMessages([fatDelta, m("user", "u", 2)], 10000);
+  assert(
+    budgeted[0].toolsAdded === undefined,
+    "t22: the strip still runs inside the budgeted pipeline",
+  );
+}
+
+// --- 22c. the tokenBudget field rides the same clamp/narrowing doors (extends t5/t7/t21c).
+{
+  const clamped = withConfig(JSON.stringify({ tokenBudget: -50 }), () => loadConfig());
+  assert(
+    clamped.tokenBudget === MIN_TOKEN_BUDGET,
+    "t22c: a negative tokenBudget clamps to 0 (off)",
+  );
+  const high = withConfig(JSON.stringify({ tokenBudget: 9999999 }), () => loadConfig());
+  assert(
+    high.tokenBudget === MAX_TOKEN_BUDGET,
+    "t22c: an over-max tokenBudget clamps down to the maximum",
+  );
+  const wrong = withConfig(JSON.stringify({ tokenBudget: "big", interval: 3 }), () => loadConfig());
+  assert(
+    wrong.tokenBudget === DEFAULT_CONFIG.tokenBudget && wrong.interval === 3,
+    "t22c: a string tokenBudget falls back, leaving neighbors intact",
+  );
+  // Raw string, not an object literal: JSON has no Infinity, so an object literal
+  // would serialize 1e999 to null and the clamp door would never see it (the t5 idiom).
+  const warns = captureWarn(() =>
+    withConfig('{"tokenBudget": 1e999, "interval": 0}', () => {
+      const cfg = loadConfig();
+      assert(
+        cfg.tokenBudget === MIN_TOKEN_BUDGET && cfg.interval === 1,
+        "t22c: an infinite tokenBudget clamps to 0 next to the clamped interval",
+      );
+    }),
+  );
+  assert(warns.length === 1, "t22c: two clamped fields share the warn-once latch");
+  assert(DEFAULT_CONFIG.tokenBudget === 0, "t22c: the code default is 0 (the fold is off)");
+}
+
+// --- 23. FR2 memory: the store round-trip, the cap, the digest, and the window ride.
+{
+  const realMemoryHref = MEMORY_DIR_URL.href;
+  const storeDir = join(tmpRoot, "memory-store");
+  resetMemoryWarnOnceForTest();
+  rmSync(storeDir, { recursive: true, force: true });
+  MEMORY_DIR_URL.href = `${pathToFileURL(storeDir).href}/`;
+  try {
+    // The key is stable per cwd and distinct per directory.
+    const key = projectKeyFor("C:\\repo a");
+    assert(key === projectKeyFor("C:\\repo a"), "t23: the same cwd maps to the same store key");
+    assert(
+      projectKeyFor("C:\\repo a") !== projectKeyFor("C:\\repo  a"),
+      "t23: a different cwd maps to a different store key",
+    );
+    assert(
+      /^[A-Za-z0-9._-]+$/.test(projectKeyFor("C:\\repo a/\\*?:")),
+      "t23: the key is filename-safe for a hostile cwd",
+    );
+
+    // Round-trip: two appends read back in order.
+    recordAdvice("proj", "note one", 5, 1);
+    recordAdvice("proj", "note two", 5, 2);
+    const entries = readEntries("proj");
+    assert(entries.length === 2, "t23: two appends store two entries");
+    assert(
+      entries[0].text === "note one" && entries[1].text === "note two",
+      "t23: entries read back oldest first",
+    );
+    assert(entries[0].timestamp === 1, "t23: the seam's timestamp is stored");
+
+    // The write-time cap keeps the newest.
+    recordAdvice("proj", "note three", 2, 3);
+    const capped = readEntries("proj");
+    assert(
+      capped.length === 2 && capped[0].text === "note two" && capped[1].text === "note three",
+      "t23: the cap keeps the newest entries",
+    );
+
+    // Blank advice is skipped, not stored.
+    recordAdvice("proj", "   ", 2, 4);
+    assert(readEntries("proj").length === 2, "t23: blank advice is skipped");
+
+    // An unknown key reads as the empty store, silently.
+    const silent = captureWarn(() => readEntries("unknown"));
+    assert(readEntries("unknown").length === 0, "t23: an unknown key reads as empty");
+    assert(silent.length === 0, "t23: the ENOENT read warns nothing");
+
+    // A corrupt store warns once with the pinned reason and reads as empty (the latch).
+    rmSync(storeDir, { recursive: true, force: true });
+    recordAdvice("proj", "seed", 5, 1);
+    writeFileSync(join(storeDir, "proj.json"), "{ not json");
+    const corruptWarns = captureWarn(() => {
+      assert(readEntries("proj").length === 0, "t23: a corrupt store reads as empty");
+      assert(readEntries("proj").length === 0, "t23: the corrupt store still reads as empty");
+    });
+    assert(
+      corruptWarns.length === 1 && corruptWarns[0].includes("ignoring unreadable advisor memory"),
+      "t23: a corrupt store warns once with the pinned reason",
+    );
+
+    // capEntries: the pure cap arithmetic.
+    const seeded = [
+      { timestamp: 1, text: "a" },
+      { timestamp: 2, text: "b" },
+      { timestamp: 3, text: "c" },
+    ];
+    assert(capEntries(seeded, 0).length === 0, "t23: cap 0 is the empty store");
+    assert(capEntries(seeded, -1).length === 0, "t23: a negative cap is the empty store");
+    assert(capEntries(seeded, 5) === seeded, "t23: an over-cap cap is the identity");
+    assert(capEntries(seeded, 3) === seeded, "t23: an at-cap cap is the identity");
+    const two = capEntries(seeded, 2);
+    assert(
+      two.length === 2 && two[0].text === "b" && two[1].text === "c",
+      "t23: an over-cap cap keeps the newest two",
+    );
+
+    // A write into a hostile path never throws; the warn carries the pinned reason.
+    // The pre-read is silent, so the write's warn is deterministic on every platform.
+    resetMemoryWarnOnceForTest();
+    writeFileSync(join(tmpRoot, "memory-blocker"), "not a directory");
+    const blockedHref = MEMORY_DIR_URL.href;
+    MEMORY_DIR_URL.href = `${pathToFileURL(join(tmpRoot, "memory-blocker")).href}/`;
+    let threw = false;
+    const hostileWarns = captureWarn(() => {
+      try {
+        recordAdvice("proj", "lost advice", 5, 1);
+      } catch {
+        threw = true;
+      }
+    });
+    MEMORY_DIR_URL.href = blockedHref;
+    assert(!threw, "t23: a hostile store path never throws");
+    assert(
+      hostileWarns.length === 1 && hostileWarns[0].includes("advisor memory write failed"),
+      "t23: a failed write warns once with the pinned reason",
+    );
+
+    // The digest builder: exact text, singular and plural, empty -> undefined.
+    assert(digestMessage([], 1) === undefined, "t23: an empty store builds no digest");
+    const one = digestMessage([{ timestamp: 1, text: "only advice" }], 7);
+    assert(
+      one.role === "system" &&
+        one.content === "Advisor memory from earlier fires (1 entry):\n- only advice" &&
+        one.timestamp === 7,
+      "t23: the singular digest is exact",
+    );
+    const twoEntry = digestMessage(
+      [
+        { timestamp: 1, text: "first advice" },
+        { timestamp: 2, text: "second advice" },
+      ],
+      7,
+    );
+    assert(
+      twoEntry.content ===
+        "Advisor memory from earlier fires (2 entries):\n- first advice\n- second advice",
+      "t23: the plural digest is exact and reads oldest first",
+    );
+
+    // The window ride: base ends on an assistant, so the nudge rides and the digest
+    // is inserted in front of it — the nudge stays terminal.
+    const base = [
+      { role: "user", content: [{ type: "text", text: "work" }], timestamp: 1 },
+      { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 2 },
+    ];
+    const digest = digestMessage([{ timestamp: 1, text: "prior fire" }], 5);
+    const shaped = buildAdvisorMessages(base, 0, digest);
+    assert(shaped.length === 4, "t23: the digest adds exactly one message");
+    assert(shaped[2] === digest, "t23: the digest sits after the transcript");
+    assert(shaped[2].role === "system", "t23: the digest is a system message");
+    assert(shaped[3].content[0].text === ADVISOR_NUDGE, "t23: the nudge stays terminal");
+
+    // The digest never folds and keeps the recency slot, even over a starved budget.
+    const starved = buildAdvisorMessages(base, 1, digest);
+    assert(
+      starved.includes(digest) && starved[starved.length - 2] === digest,
+      "t23: the digest survives a starved budget at the recency end",
+    );
+    assert(
+      starved[0].content[0].text.startsWith(BUDGET_FOLD_MARKER_PREFIX),
+      "t23: the transcript itself still folds under the budget",
+    );
+
+    // A transcript with its own user tail: the digest goes in front of it, the tail
+    // stays terminal, and no nudge rides (ensureUserTail is untouched).
+    const userTailed = buildAdvisorMessages([base[0]], 0, digest);
+    assert(
+      userTailed.length === 2 && userTailed[0] === digest && userTailed[1] === base[0],
+      "t23: the digest is inserted in front of the transcript's own user tail",
+    );
+
+    // An empty transcript degrades to the digest alone; no nudge is invented.
+    const empty = buildAdvisorMessages([], 0, digest);
+    assert(
+      empty.length === 1 && empty[0] === digest,
+      "t23: an empty context yields the digest alone",
+    );
+
+    // Default-off: no digest is byte-identical to the pre-FR2 two-arg call. The
+    // comparison normalizes timestamps: each call stamps its own nudge with an
+    // independent Date.now(), so a millisecond boundary between the two calls is
+    // legal, not a divergence (the shapeJson helper above).
+    const noDigest = buildAdvisorMessages(base);
+    const undefinedDigest = buildAdvisorMessages(base, 0, undefined);
+    assert(
+      noDigest.length === undefinedDigest.length &&
+        shapeJson(noDigest) === shapeJson(undefinedDigest),
+      "t23: the absent digest is byte-identical to the pre-FR2 shape",
+    );
+  } finally {
+    MEMORY_DIR_URL.href = realMemoryHref;
+    rmSync(storeDir, { recursive: true, force: true });
+  }
+}
+
+// --- 23c. the memoryCap field rides the same clamp/narrowing doors (extends t5/t7/t21c/t22c).
+{
+  const clamped = withConfig(JSON.stringify({ memoryCap: -3 }), () => loadConfig());
+  assert(clamped.memoryCap === MIN_MEMORY_CAP, "t23c: a negative memoryCap clamps to 0 (off)");
+  const high = withConfig(JSON.stringify({ memoryCap: 99999 }), () => loadConfig());
+  assert(
+    high.memoryCap === MAX_MEMORY_CAP,
+    "t23c: an over-max memoryCap clamps down to the maximum",
+  );
+  const wrong = withConfig(JSON.stringify({ memoryCap: "many", interval: 4 }), () => loadConfig());
+  assert(
+    wrong.memoryCap === DEFAULT_CONFIG.memoryCap && wrong.interval === 4,
+    "t23c: a string memoryCap falls back, leaving neighbors intact",
+  );
+  const silent = captureWarn(() =>
+    withConfig(JSON.stringify({ memoryCap: "many" }), () => loadConfig()),
+  );
+  assert(silent.length === 0, "t23c: a wrong-typed memoryCap never reaches the clamp");
+  // Raw string, not an object literal: JSON has no Infinity, so an object literal
+  // would serialize 1e999 to null and the clamp door would never see it (the t5 idiom).
+  const warns = captureWarn(() =>
+    withConfig('{"memoryCap": 1e999, "interval": 0}', () => {
+      const cfg = loadConfig();
+      assert(
+        cfg.memoryCap === MIN_MEMORY_CAP && cfg.interval === 1,
+        "t23c: an infinite memoryCap clamps to 0 next to the clamped interval",
+      );
+    }),
+  );
+  assert(warns.length === 1, "t23c: two clamped fields share the warn-once latch");
+  assert(DEFAULT_CONFIG.memoryCap === 0, "t23c: the code default is 0 (memory off)");
+}
+
+// --- 24. FR1 dialogue: the stamp core, the commit passthrough, and the key-less default.
+{
+  // stampDetails: the stable keys, exact and ordered.
+  const stamp = stampDetails(3, 11);
+  assert(
+    stamp.fire === "3" && stamp.turn === "11",
+    "t24: the stamp is the exact { fire, turn } string pair",
+  );
+  assert(
+    JSON.stringify(Object.keys(stamp)) === JSON.stringify(["fire", "turn"]),
+    "t24: the keys are stable and fire comes first",
+  );
+  assert(
+    stampDetails(1, 0).fire === "1" && stampDetails(1, 0).turn === "0",
+    "t24: the first fire stamps ordinal 1 on turn 0",
+  );
+}
+{
+  // buildCorrection: the stamp rides the draft; an absent stamp leaves NO key.
+  const stamped = buildCorrection("advisor-turn-gate", "text", true, [], stampDetails(2, 7));
+  const draft = stamped.entries[0];
+  assert(draft.type === "custom_message", "t24: the stamped draft is a custom_message");
+  assert(
+    draft.details !== undefined && draft.details.fire === "2" && draft.details.turn === "7",
+    "t24: the stamp rides the committed draft",
+  );
+  const unstamped = buildCorrection("advisor-turn-gate", "text", true, []);
+  assert(
+    unstamped.entries.length === 1 && !("details" in unstamped.entries[0]),
+    "t24: an absent stamp leaves the draft key-less (the pre-FR1 byte shape)",
+  );
+  const peers = [{ type: "custom", customType: "peer-a" }];
+  const withPeers = buildCorrection("ct", "t", true, peers, stampDetails(1, 1));
+  assert(
+    withPeers.entries.length === 2 &&
+      withPeers.entries[0].customType === "peer-a" &&
+      withPeers.entries[1].details?.fire === "1",
+    "t24: stamping keeps the peer spread and the draft rides last",
+  );
+  assert(withPeers.continue === true, "t24: continue survives stamping");
+}
+{
+  // planCommit: the passthrough reaches the committed draft; the notify arms stay
+  // unchanged in format and carry no details anywhere.
+  const committed = planCommit({
+    outcome: { ok: true, text: "guidance" },
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: [],
+    strip: (text) => text,
+    details: stampDetails(4, 12),
+  });
+  assert(
+    committed.action === "commit" && committed.result.entries[0].details?.fire === "4",
+    "t24: planCommit stamps the commit",
+  );
+  const failed = planCommit({
+    outcome: { ok: false, reason: "advisor stopped with error" },
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: [],
+    strip: (text) => text,
+    details: stampDetails(4, 12),
+  });
+  assert(
+    failed.action === "notify" &&
+      failed.message === "advisor-turn-gate: advisor stopped with error",
+    "t24: a failure notifies in the exact format, stamp or no stamp",
+  );
+}
+
+// --- 25. FR4 read-only tools: the pure path bound, the sandbox I/O, the loop, and
+//         the shared deadline.
+{
+  // planRead: the pure prefix bound. Cases ride join()/resolve() so they hold on
+  // win32 and POSIX alike; planRead does no fs, so no fixture files are needed.
+  const root = join(tmpRoot, "sandbox-plan-root");
+  assert(planRead(root, "src/a.ts").action === "allow", "t25: a project-relative path is allowed");
+  assert(
+    planRead(root, join(root, "src", "a.ts")).action === "allow",
+    "t25: an absolute path inside the root is allowed",
+  );
+  const parentEscape = planRead(root, join("..", "evil.ts"));
+  assert(
+    parentEscape.action === "refuse" &&
+      parentEscape.reason.includes("outside the project directory"),
+    "t25: a parent escape is refused with the pinned wording",
+  );
+  assert(
+    planRead(root, join(root, "..", "evil.ts")).action === "refuse",
+    "t25: an in-root-relative escape sequence is refused",
+  );
+  assert(
+    planRead(root, join(tmpdir(), "elsewhere", "x.ts")).action === "refuse",
+    "t25: an absolute path outside the root is refused",
+  );
+  assert(planRead(root, "").action === "refuse", "t25: an empty path is refused");
+  assert(planRead(root, undefined).action === "refuse", "t25: a missing path is refused");
+  assert(planRead(root, 42).action === "refuse", "t25: a non-string path is refused");
+}
+
+{
+  // The real sandbox over real files in tmpRoot: the happy path and the shape
+  // refusals node itself produces. The escape and read-error shapes ride stub fs
+  // in the next block, so this block stays platform-stable.
+  const root = join(tmpRoot, "sandbox-live");
+  mkdirSync(root, { recursive: true });
+  writeFileSync(join(root, "note.txt"), "hello advice");
+  const sandbox = createSandbox(root);
+  const okRead = sandbox("read_file", { path: "note.txt" });
+  assert(okRead.ok && okRead.text === "hello advice", "t25: a real read returns the file text");
+  const wrongName = sandbox("write_file", { path: "note.txt" });
+  assert(
+    !wrongName.ok && wrongName.reason === sandboxRefusalFor("write_file"),
+    "t25: a non-allowlisted name is refused with the pinned string",
+  );
+  const outside = sandbox("read_file", { path: join("..", "config-under-test.json") });
+  assert(
+    !outside.ok && outside.reason.includes("outside the project directory"),
+    "t25: the sandbox refuses a parent escape",
+  );
+  const missing = sandbox("read_file", { path: "nope.txt" });
+  assert(!missing.ok && missing.reason.includes("no such file"), "t25: a missing file refuses");
+  const dirRead = sandbox("read_file", { path: "." });
+  assert(!dirRead.ok && dirRead.reason.includes("not a file"), "t25: a directory read refuses");
+  const capped = createSandbox(root, 4);
+  const overCap = capped("read_file", { path: "note.txt" });
+  assert(
+    !overCap.ok && overCap.reason.includes("byte cap"),
+    "t25: an over-cap read refuses with the byte-cap wording",
+  );
+  assert(createSandbox(root)("read_file", null).ok === false, "t25: null args refuse");
+  assert(createSandbox(root)("read_file", {}).ok === false, "t25: path-less args refuse");
+  assert(
+    createSandbox(root)("read_file", { path: 42 }).ok === false,
+    "t25: a numeric path refuses",
+  );
+}
+
+{
+  // The FsLike seam: a stub realpath escaping the root and a stub read throwing
+  // are pinned deterministically — no real symlinks, no platform guards.
+  const root = join(tmpRoot, "sandbox-stub");
+  const escapeFs = {
+    readFileSync: () => Buffer.alloc(0),
+    realpathSync: () => join(tmpdir(), "outside", "secret.txt"),
+  };
+  const escaped = createSandbox(
+    root,
+    SANDBOX_MAX_BYTES,
+    escapeFs,
+  )("read_file", {
+    path: "note.txt",
+  });
+  assert(
+    !escaped.ok && escaped.reason.includes("outside the project directory"),
+    "t25: a realpath escaping the root is refused (stub fs)",
+  );
+  const boomFs = {
+    readFileSync: () => {
+      const err = new Error("disk gone");
+      err.code = "EACCES";
+      throw err;
+    },
+    realpathSync: (p) => p,
+  };
+  const denied = createSandbox(root, SANDBOX_MAX_BYTES, boomFs)("read_file", { path: "note.txt" });
+  assert(
+    !denied.ok && denied.reason.includes("disk gone"),
+    "t25: a read error surfaces through the injected fs with its message",
+  );
+}
+
+{
+  // The loop: a toolUse round is consumed, the result replays, the terminal stop commits.
+  let calls = 0;
+  let secondContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (_model, context) => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [
+              { type: "toolCall", id: "c1", name: "read_file", arguments: { path: "a.ts" } },
+            ],
+          });
+        }
+        secondContext = context;
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "final guidance" }],
+        });
+      },
+    },
+  };
+  const executed = [];
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [{ role: "user", content: [{ type: "text", text: "q" }], timestamp: 1 }],
+    timeoutMs: 5000,
+    tools: [READ_FILE_TOOL],
+    executeTool: (name, args) => {
+      executed.push([name, args]);
+      return { ok: true, text: "file body" };
+    },
+    maxToolRounds: 3,
+  });
+  assert(
+    outcome.ok && outcome.text === "final guidance",
+    "t25: the loop resolves to the final text",
+  );
+  assert(calls === 2, "t25: a consumed toolUse costs exactly one extra call");
+  assert(
+    executed.length === 1 && executed[0][0] === "read_file" && executed[0][1].path === "a.ts",
+    "t25: the executor receives the call name and arguments",
+  );
+  assert(secondContext !== null, "t25: the second call carries the replayed conversation");
+  assert(secondContext.messages.length === 3, "t25: the replay appends assistant + toolResult");
+  assert(secondContext.messages[1].role === "assistant", "t25: the assistant turn is replayed");
+  const result = secondContext.messages[2];
+  assert(
+    result.role === "toolResult" &&
+      result.toolCallId === "c1" &&
+      result.isError === false &&
+      result.content[0].text === "file body",
+    "t25: a successful execution replays as a non-error toolResult",
+  );
+  assert(
+    secondContext.tools.length === 1 && secondContext.tools[0].name === "read_file",
+    "t25: the declared tool rides every round's request",
+  );
+}
+
+{
+  // A refusal replays as isError and the advisor still gets its turn.
+  let calls = 0;
+  let secondContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (_model, context) => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "c2", name: "write_file", arguments: { path: "x" } }],
+          });
+        }
+        secondContext = context;
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "adapted guidance" }],
+        });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    tools: [READ_FILE_TOOL],
+    executeTool: (name) => ({ ok: false, reason: sandboxRefusalFor(name) }),
+    maxToolRounds: 3,
+  });
+  assert(
+    outcome.ok && outcome.text === "adapted guidance",
+    "t25: a refusal does not fail the fire",
+  );
+  // This block starts from an empty context, so the replay is [assistant, toolResult]
+  // and the toolResult is the LAST message (the seeded block above pins index 2).
+  const replayed = secondContext.messages.at(-1);
+  assert(
+    replayed.isError === true && replayed.content[0].text === sandboxRefusalFor("write_file"),
+    "t25: a refusal replays as an errored toolResult carrying the pinned reason",
+  );
+}
+
+{
+  // The rounds cap: a tool-happy advisor hits the terminal gate with the SAME
+  // pinned reason the single-call path always produced, after exactly
+  // maxRounds + 1 calls and no grace call.
+  let calls = 0;
+  const toolUse = () => {
+    calls += 1;
+    return Promise.resolve({
+      stopReason: "toolUse",
+      content: [{ type: "toolCall", id: `c${calls}`, name: "read_file", arguments: {} }],
+    });
+  };
+  const capped = await runAdvisor({
+    registry: { runtime: { completeSimple: toolUse } },
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    tools: [READ_FILE_TOOL],
+    executeTool: () => ({ ok: true, text: "x" }),
+    maxToolRounds: 1,
+  });
+  assert(
+    !capped.ok && capped.reason === "advisor stopped with toolUse",
+    "t25: an exhausted round budget rejects with the pinned toolUse reason",
+  );
+  assert(calls === 2, "t25: maxToolRounds 1 spends exactly one loop round");
+  calls = 0;
+  const defaulted = await runAdvisor({
+    registry: { runtime: { completeSimple: toolUse } },
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    tools: [READ_FILE_TOOL],
+    executeTool: () => ({ ok: true, text: "x" }),
+  });
+  assert(
+    !defaulted.ok && defaulted.reason === "advisor stopped with toolUse",
+    "t25: the default cap rejects too",
+  );
+  assert(calls === 4, "t25: the omitted maxToolRounds defaults to 3 rounds (config parity)");
+}
+
+{
+  // Unarmed runAdvisor with a toolUse response keeps the single-call rejection —
+  // the t16 pin re-run through the new gate order.
+  let calls = 0;
+  const outcome = await runAdvisor({
+    registry: {
+      runtime: {
+        completeSimple: () => {
+          calls += 1;
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "c", name: "read_file", arguments: {} }],
+          });
+        },
+      },
+    },
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+  });
+  assert(
+    !outcome.ok && outcome.reason === "advisor stopped with toolUse",
+    "t25: an unarmed call still rejects a toolUse outright",
+  );
+  assert(calls === 1, "t25: an unarmed toolUse never loops");
+}
+
+{
+  // Integration: the REAL sandbox refuses through the loop, by name, with the pinned string.
+  let calls = 0;
+  let secondContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (_model, context) => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "c3", name: "write_file", arguments: { path: "x" } }],
+          });
+        }
+        secondContext = context;
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "guidance after refusal" }],
+        });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    tools: [READ_FILE_TOOL],
+    executeTool: createSandbox(tmpRoot),
+    maxToolRounds: 3,
+  });
+  assert(outcome.ok, "t25: a refused non-allowlisted call still lands guidance");
+  // Empty start like the refusal block above: the toolResult is the last replayed message.
+  const replayedRefusal = secondContext.messages.at(-1);
+  assert(
+    replayedRefusal.content[0].text === sandboxRefusalFor("write_file"),
+    "t25: the real sandbox's refusal text reaches the advisor verbatim",
+  );
+}
+
+{
+  // The shared deadline: a fast toolUse round then a hung round dies at the
+  // ORIGINAL budget, not budget-plus-round.
+  const keep = setInterval(() => {}, 500);
+  let calls = 0;
+  const registry = {
+    runtime: {
+      completeSimple: () => {
+        calls += 1;
+        if (calls === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "c", name: "read_file", arguments: { path: "a" } }],
+          });
+        }
+        return new Promise(() => {});
+      },
+    },
+  };
+  const t0 = Date.now();
+  const hung = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: MIN_TIMEOUT_MS,
+    tools: [READ_FILE_TOOL],
+    executeTool: () => ({ ok: true, text: "x" }),
+    maxToolRounds: 3,
+  });
+  const dt = Date.now() - t0;
+  clearInterval(keep);
+  assert(
+    !hung.ok && /timed out/.test(hung.reason),
+    "t25: a hung second round fails open at the deadline",
+  );
+  assert(
+    dt >= MIN_TIMEOUT_MS - 50 && dt < MIN_TIMEOUT_MS + 2000,
+    `t25: the shared deadline fires on time for a ${MIN_TIMEOUT_MS}ms budget`,
+  );
+}
+
+{
+  // F023 strip discipline (Step 4 coverage fix; design follow-up: the design's
+  // Verification Note 4 demands the byte-identity guard discipline for every new
+  // refusal vocabulary, and t25 pins none of it): the sandbox refusal strings
+  // pass stripAdvisorMarkup byte-identical, so no strip tier can ever rewrite one.
+  for (const name of ["read_file", "write_file", "consult_specialist"]) {
+    const refusal = sandboxRefusalFor(name);
+    assert(
+      stripAdvisorMarkup(refusal) === refusal,
+      "t25: the allowlist refusal survives the strip byte-identical",
+    );
+  }
+  const pathProbe = planRead(join(tmpRoot), join("..", "x.ts"));
+  const pathRefusal = pathProbe.action === "refuse" ? pathProbe.reason : "";
+  assert(
+    pathRefusal.length > 0 && stripAdvisorMarkup(pathRefusal) === pathRefusal,
+    "t25: the outside-project refusal survives the strip byte-identical",
+  );
+}
+
+// --- 25c. the toolsEnabled and maxToolRounds fields ride the same clamp/narrowing
+//          doors (extends t5/t7/t21c/t22c/t23c).
+{
+  const clamped = withConfig(JSON.stringify({ maxToolRounds: 0 }), () => loadConfig());
+  assert(
+    clamped.maxToolRounds === MIN_TOOL_ROUNDS,
+    "t25c: a zero maxToolRounds clamps up to the minimum",
+  );
+  const high = withConfig(JSON.stringify({ maxToolRounds: 999 }), () => loadConfig());
+  assert(
+    high.maxToolRounds === MAX_TOOL_ROUNDS,
+    "t25c: an over-max maxToolRounds clamps down to the maximum",
+  );
+  const wrong = withConfig(
+    JSON.stringify({ toolsEnabled: "yes", maxToolRounds: "three", interval: 5 }),
+    () => loadConfig(),
+  );
+  assert(
+    wrong.toolsEnabled === DEFAULT_CONFIG.toolsEnabled &&
+      wrong.maxToolRounds === DEFAULT_CONFIG.maxToolRounds &&
+      wrong.interval === 5,
+    "t25c: wrong-typed tool fields fall back, leaving neighbors intact",
+  );
+  const silent = captureWarn(() =>
+    withConfig(JSON.stringify({ maxToolRounds: "three" }), () => loadConfig()),
+  );
+  assert(silent.length === 0, "t25c: a wrong-typed maxToolRounds never reaches the clamp");
+  // Raw string, not an object literal: JSON has no Infinity, so an object literal
+  // would serialize 1e999 to null and the clamp door would never see it (the t5 idiom).
+  const warns = captureWarn(() =>
+    withConfig('{"maxToolRounds": 1e999, "interval": 0}', () => {
+      const cfg = loadConfig();
+      assert(
+        cfg.maxToolRounds === MIN_TOOL_ROUNDS && cfg.interval === 1,
+        "t25c: an infinite maxToolRounds clamps up next to the clamped interval",
+      );
+    }),
+  );
+  assert(warns.length === 1, "t25c: two clamped fields share the warn-once latch");
+  assert(DEFAULT_CONFIG.toolsEnabled === false, "t25c: the code default is tools OFF");
+  assert(DEFAULT_CONFIG.maxToolRounds === 3, "t25c: the code default is 3 rounds");
+}
+
+// --- 26. FR6 specialist consult: the declared tool, the consult leg, the routing,
+//         the shared deadline, and the aggregation.
+{
+  // Happy path: one consult round, the leg answers tool-free, the loop continues,
+  // and the final stop aggregates base + specialist byte-exact.
+  let calls = 0;
+  const contexts = [];
+  const specialistModel = { provider: "openai", id: "gpt-5.1" };
+  const registry = {
+    runtime: {
+      completeSimple: (model, context) => {
+        calls += 1;
+        contexts.push({ model, context });
+        if (calls === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [
+              {
+                type: "toolCall",
+                id: "cs1",
+                name: "consult_specialist",
+                arguments: { question: "Is the retry policy sound?" },
+              },
+            ],
+          });
+        }
+        if (model === specialistModel) {
+          return Promise.resolve({
+            stopReason: "stop",
+            content: [{ type: "text", text: "back off exponentially; cap at five tries" }],
+          });
+        }
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "final guidance" }],
+        });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [{ role: "user", content: [{ type: "text", text: "q" }], timestamp: 1 }],
+    timeoutMs: 5000,
+    maxToolRounds: 3,
+    specialist: { model: specialistModel, systemPrompt: "specialist prompt" },
+  });
+  assert(
+    outcome.ok &&
+      outcome.text ===
+        "final guidance\n\n---\n\nSpecialist consult answer:\nback off exponentially; cap at five tries",
+    "t26: the fire aggregates base advice and the specialist answer byte-exact",
+  );
+  assert(calls === 3, "t26: a consult fire costs exactly three calls (main, leg, main)");
+  const legContext = contexts[1];
+  assert(
+    legContext.model === specialistModel && legContext.context.systemPrompt === "specialist prompt",
+    "t26: the specialist leg carries the specialist model and system prompt",
+  );
+  assert(
+    legContext.context.messages.length === 1 &&
+      legContext.context.messages[0].role === "user" &&
+      legContext.context.messages[0].content[0].text === "Is the retry policy sound?",
+    "t26: the specialist leg receives the question as its only user message",
+  );
+  assert(legContext.context.tools === undefined, "t26: the specialist leg is tool-free");
+  assert(
+    contexts[2].context.messages.length === 3 &&
+      contexts[2].context.messages[2].role === "toolResult" &&
+      contexts[2].context.messages[2].isError === false &&
+      contexts[2].context.messages[2].content[0].text ===
+        "back off exponentially; cap at five tries",
+    "t26: the consult answer replays to the advisor as a non-error toolResult",
+  );
+  assert(
+    contexts[2].context.tools.length === 1 &&
+      contexts[2].context.tools[0].name === CONSULT_SPECIALIST_NAME,
+    "t26: the consult tool rides every round's request",
+  );
+  assert(
+    CONSULT_SPECIALIST_TOOL.parameters.properties.question.type === "string",
+    "t26: the declared tool takes one string question",
+  );
+}
+{
+  // Two consults aggregate in fire order between the pinned separators and headers.
+  const specialistModel = { provider: "openai", id: "gpt-5.1" };
+  let step = 0;
+  const registry = {
+    runtime: {
+      completeSimple: (model) => {
+        step += 1;
+        if (model === specialistModel) {
+          const text = step === 2 ? "answer one" : "answer two";
+          return Promise.resolve({ stopReason: "stop", content: [{ type: "text", text }] });
+        }
+        const isLast = step === 5;
+        return Promise.resolve(
+          isLast
+            ? { stopReason: "stop", content: [{ type: "text", text: "final" }] }
+            : {
+                stopReason: "toolUse",
+                content: [
+                  {
+                    type: "toolCall",
+                    id: `cs${step}`,
+                    name: "consult_specialist",
+                    arguments: { question: step === 1 ? "q one" : "q two" },
+                  },
+                ],
+              },
+        );
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    specialist: { model: specialistModel, systemPrompt: "sp2" },
+  });
+  assert(
+    outcome.ok &&
+      outcome.text ===
+        [
+          "final",
+          `${CONSULT_ANSWER_HEADER}\nanswer one`,
+          `${CONSULT_ANSWER_HEADER}\nanswer two`,
+        ].join(CONSULT_SECTION_SEPARATOR),
+    "t26: two consults aggregate in fire order with the pinned separator and header",
+  );
+  assert(
+    stripAdvisorMarkup(outcome.text) === outcome.text,
+    "t26: the aggregated text passes through stripAdvisorMarkup byte-identical",
+  );
+  assert(
+    !outcome.text.includes("\n\n\n"),
+    "t26: no run of three newlines exists anywhere in the aggregated text",
+  );
+}
+{
+  // Base-only fail arm: the specialist leg resolves with stopReason "error"; the
+  // reason replays as an errored toolResult and the final text carries no section.
+  const specialistModel = { provider: "openai", id: "gpt-5.1" };
+  let step = 0;
+  let finalContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (model, context) => {
+        step += 1;
+        if (model === specialistModel) {
+          return Promise.resolve({
+            stopReason: "error",
+            errorMessage: "Provider is not configured: openai",
+            content: [],
+          });
+        }
+        if (step === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [
+              {
+                type: "toolCall",
+                id: "cs1",
+                name: "consult_specialist",
+                arguments: { question: "q" },
+              },
+            ],
+          });
+        }
+        finalContext = context;
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "base only" }],
+        });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    specialist: { model: specialistModel, systemPrompt: "sp2" },
+  });
+  assert(
+    outcome.ok && outcome.text === "base only",
+    "t26: a failed leg commits base-only advice with no section",
+  );
+  assert(
+    finalContext.messages[1].isError === true &&
+      finalContext.messages[1].content[0].text === "Provider is not configured: openai",
+    "t26: a failed leg replays its reason as an errored toolResult",
+  );
+}
+{
+  // Base-only fail arm: a hung specialist leg dies at the shared remaining budget,
+  // and the shared-clock timeout text rides the errored toolResult verbatim.
+  const keep = setInterval(() => {}, 500);
+  const specialistModel = { provider: "openai", id: "gpt-5.1" };
+  let step = 0;
+  let finalContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (model, context) => {
+        step += 1;
+        if (model === specialistModel) return new Promise(() => {});
+        if (step === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [
+              {
+                type: "toolCall",
+                id: "cs1",
+                name: "consult_specialist",
+                arguments: { question: "q" },
+              },
+            ],
+          });
+        }
+        finalContext = context;
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "base only" }],
+        });
+      },
+    },
+  };
+  const t0 = Date.now();
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: MIN_TIMEOUT_MS,
+    specialist: { model: specialistModel, systemPrompt: "sp2" },
+  });
+  const dt = Date.now() - t0;
+  clearInterval(keep);
+  assert(
+    outcome.ok && outcome.text === "base only",
+    "t26: a hung leg still lands base-only advice",
+  );
+  // The shared clock names the SLICE it raced (fire budget minus elapsed), so the
+  // number varies with machine load; the pin asserts the clock's exact text SHAPE —
+  // the shared-clock rejection verbatim, not a leg-specific error.
+  assert(
+    finalContext.messages[1].isError === true &&
+      /^advisor call timed out after \d+ms$/.test(finalContext.messages[1].content[0].text),
+    "t26: the shared-clock timeout text rides the errored toolResult verbatim",
+  );
+  assert(
+    dt >= MIN_TIMEOUT_MS - 50 && dt < MIN_TIMEOUT_MS + 2000,
+    "t26: the consult leg races the fire's remaining budget, not a fresh one",
+  );
+}
+{
+  // The leg's two remaining failure arms pin the fail-open contract (Step 4
+  // coverage fix; design follow-up: the design's t26 carries no pins for these
+  // arms despite the every-failure-path-gets-a-pin note): an empty-text stop
+  // reply and a non-error non-stop reply each replay as an errored toolResult
+  // with the exact pinned reason, and the fire still lands base-only advice.
+  const arms = [
+    { stopReason: "stop", content: [{ type: "text", text: "" }] },
+    { stopReason: "maxTokens", errorMessage: undefined, content: [] },
+  ];
+  for (const legReply of arms) {
+    const specialistModel = { provider: "openai", id: "gpt-5.1" };
+    let step = 0;
+    let finalContext = null;
+    const registry = {
+      runtime: {
+        completeSimple: (model, context) => {
+          step += 1;
+          if (model === specialistModel) return Promise.resolve(legReply);
+          if (step === 1) {
+            return Promise.resolve({
+              stopReason: "toolUse",
+              content: [
+                {
+                  type: "toolCall",
+                  id: "cs1",
+                  name: "consult_specialist",
+                  arguments: { question: "q" },
+                },
+              ],
+            });
+          }
+          finalContext = context;
+          return Promise.resolve({
+            stopReason: "stop",
+            content: [{ type: "text", text: "base only" }],
+          });
+        },
+      },
+    };
+    const outcome = await runAdvisor({
+      registry,
+      model: { provider: "a", id: "b" },
+      systemPrompt: "sp",
+      messages: [],
+      timeoutMs: 5000,
+      specialist: { model: specialistModel, systemPrompt: "sp2" },
+    });
+    assert(
+      outcome.ok && outcome.text === "base only",
+      "t26: a failed leg arm never fails the fire",
+    );
+    assert(
+      finalContext !== null && finalContext.messages[1].isError === true,
+      "t26: the failed leg arm replays as an errored toolResult",
+    );
+    assert(
+      finalContext.messages[1].content[0].text === "specialist returned no text" ||
+        finalContext.messages[1].content[0].text === "specialist stopped with maxTokens",
+      "t26: the leg's no-text and non-stop arms carry their exact pinned reasons",
+    );
+  }
+}
+// The question guard: missing, empty, whitespace-only, and non-string questions
+// refuse with the pinned string; the leg never runs; the fire still lands.
+for (const bad of [{}, { question: "" }, { question: "   " }, { question: 42 }]) {
+  const specialistModel = { provider: "openai", id: "gpt-5.1" };
+  let step = 0;
+  let finalContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (model, context) => {
+        step += 1;
+        if (model === specialistModel) {
+          throw new Error("the leg must never run for a malformed question");
+        }
+        if (step === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "cs1", name: "consult_specialist", arguments: bad }],
+          });
+        }
+        finalContext = context;
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "base" }],
+        });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    specialist: { model: specialistModel, systemPrompt: "sp2" },
+  });
+  assert(outcome.ok && outcome.text === "base", "t26: a malformed question never fails the fire");
+  assert(
+    finalContext.messages[1].isError === true &&
+      finalContext.messages[1].content[0].text === CONSULT_QUESTION_REFUSAL,
+    "t26: a malformed question refuses with the pinned string",
+  );
+}
+{
+  // The unconfigured consult: the loop is armed by the sandbox tools alone, the
+  // advisor names consult_specialist anyway, and the pinned refusal replays.
+  let step = 0;
+  let finalContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (_model, context) => {
+        step += 1;
+        if (step === 1) {
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [
+              {
+                type: "toolCall",
+                id: "c1",
+                name: "consult_specialist",
+                arguments: { question: "q" },
+              },
+            ],
+          });
+        }
+        finalContext = context;
+        return Promise.resolve({ stopReason: "stop", content: [{ type: "text", text: "base" }] });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    tools: [READ_FILE_TOOL],
+    executeTool: () => ({ ok: true, text: "x" }),
+    maxToolRounds: 3,
+  });
+  assert(
+    outcome.ok && outcome.text === "base",
+    "t26: an unconfigured consult never fails the fire",
+  );
+  assert(
+    finalContext.messages[1].isError === true &&
+      finalContext.messages[1].content[0].text === CONSULT_UNCONFIGURED_REFUSAL,
+    "t26: an unconfigured consult refuses with the pinned string",
+  );
+  assert(
+    finalContext.tools.length === 1 && finalContext.tools[0].name === "read_file",
+    "t26: no specialist means the consult tool is not declared",
+  );
+}
+{
+  // Specialist-only arming: no sandbox, no executor — consult_specialist is the
+  // only declared tool, and an undeclared name refuses with the pinned string.
+  const specialistModel = { provider: "openai", id: "gpt-5.1" };
+  let step = 0;
+  let declared = null;
+  let finalContext = null;
+  const registry = {
+    runtime: {
+      completeSimple: (_model, context) => {
+        step += 1;
+        if (step === 1) {
+          declared = context.tools;
+          return Promise.resolve({
+            stopReason: "toolUse",
+            content: [{ type: "toolCall", id: "c1", name: "write_file", arguments: { path: "x" } }],
+          });
+        }
+        finalContext = context;
+        return Promise.resolve({ stopReason: "stop", content: [{ type: "text", text: "base" }] });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    specialist: { model: specialistModel, systemPrompt: "sp2" },
+  });
+  assert(
+    declared.length === 1 && declared[0].name === CONSULT_SPECIALIST_NAME,
+    "t26: a specialist-only fire declares exactly the consult tool",
+  );
+  assert(outcome.ok && outcome.text === "base", "t26: an undeclared name never fails the fire");
+  assert(
+    finalContext.messages[1].isError === true &&
+      finalContext.messages[1].content[0].text === undeclaredToolRefusalFor("write_file"),
+    "t26: an undeclared tool name refuses with the pinned string",
+  );
+}
+{
+  // The round budget counts consult rounds: maxToolRounds 1 spends one consult
+  // round and then rejects at the terminal gate with the SAME pinned toolUse
+  // reason, after main + leg + terminal main.
+  let calls = 0;
+  const specialistModel = { provider: "openai", id: "gpt-5.1" };
+  const registry = {
+    runtime: {
+      completeSimple: (model) => {
+        calls += 1;
+        if (model === specialistModel) {
+          return Promise.resolve({ stopReason: "stop", content: [{ type: "text", text: "leg" }] });
+        }
+        return Promise.resolve({
+          stopReason: "toolUse",
+          content: [
+            {
+              type: "toolCall",
+              id: `c${calls}`,
+              name: "consult_specialist",
+              arguments: { question: "q" },
+            },
+          ],
+        });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+    maxToolRounds: 1,
+    specialist: { model: specialistModel, systemPrompt: "sp2" },
+  });
+  assert(
+    !outcome.ok && outcome.reason === "advisor stopped with toolUse",
+    "t26: an exhausted round budget rejects consults with the pinned toolUse reason",
+  );
+  assert(calls === 3, "t26: maxToolRounds 1 spends main + leg + terminal main");
+}
+{
+  // Default-off: an unarmed call (no tools, no specialist) with a plain stop keeps
+  // the single-call shape and byte-identical text — the pre-FR6 contract.
+  let calls = 0;
+  const registry = {
+    runtime: {
+      completeSimple: () => {
+        calls += 1;
+        return Promise.resolve({
+          stopReason: "stop",
+          content: [{ type: "text", text: "plain" }],
+        });
+      },
+    },
+  };
+  const outcome = await runAdvisor({
+    registry,
+    model: { provider: "a", id: "b" },
+    systemPrompt: "sp",
+    messages: [],
+    timeoutMs: 5000,
+  });
+  assert(
+    outcome.ok && outcome.text === "plain" && calls === 1,
+    "t26: the default-off fire is the single-call shape",
+  );
+}
+
+{
+  // F023 strip discipline (Step 4 coverage fix; design follow-up: the design's
+  // Verification Note 4 demands the byte-identity guard discipline for every new
+  // refusal vocabulary, and t26 pins only the separator): the consult refusal
+  // strings pass stripAdvisorMarkup byte-identical.
+  const refusals = [
+    CONSULT_QUESTION_REFUSAL,
+    CONSULT_UNCONFIGURED_REFUSAL,
+    undeclaredToolRefusalFor("write_file"),
+  ];
+  for (const refusal of refusals) {
+    assert(
+      stripAdvisorMarkup(refusal) === refusal,
+      "t26: the consult refusal strings survive the strip byte-identical",
+    );
+  }
+}
+
+// --- 26c. the specialistModel and specialistSystemPrompt fields ride the same
+//          narrowing doors (extends t5/t7/t21c/t22c/t23c/t25c).
+{
+  const cfg = withConfig(
+    JSON.stringify({ specialistModel: "  openai/gpt-5.1  ", specialistSystemPrompt: "custom" }),
+    () => loadConfig(),
+  );
+  assert(cfg.specialistModel === "openai/gpt-5.1", "t26c: a padded specialistModel is trimmed");
+  assert(cfg.specialistSystemPrompt === "custom", "t26c: a custom specialist prompt survives");
+  const wrong = withConfig(
+    JSON.stringify({ specialistModel: 42, specialistSystemPrompt: "   ", interval: 6 }),
+    () => loadConfig(),
+  );
+  assert(
+    wrong.specialistModel === DEFAULT_CONFIG.specialistModel &&
+      wrong.specialistSystemPrompt === DEFAULT_CONFIG.specialistSystemPrompt &&
+      wrong.interval === 6,
+    "t26c: wrong-typed and empty specialist fields fall back, leaving neighbors intact",
+  );
+  assert(DEFAULT_CONFIG.specialistModel === "", "t26c: the code default is consults OFF");
+  assert(
+    DEFAULT_CONFIG.specialistSystemPrompt.length > 0,
+    "t26c: the specialist prompt ships a non-empty default",
+  );
+}
+
+// --- 27. FR8 async fire: the settle core — abstain, the two notify arms, the
+//         once-only commit shape, and the never-wake pin.
+{
+  // Abstain first: an empty slot decides nothing.
+  const quiet = planSettle({
+    held: undefined,
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: [],
+    strip: (text) => text,
+    details: stampDetails(1, 0),
+  });
+  assert(quiet.action === "abstain", "t27: an empty slot abstains");
+  // Commit: peers spread first, the draft rides last, the stamp carries the
+  // FIRE-TIME turn index, and the result carries NO continue key — the settle
+  // path never wakes an idle agent (FR8).
+  const peers = [{ type: "custom", customType: "peer-a" }];
+  const settle = planSettle({
+    held: { outcome: { ok: true, text: "async advice" }, turnIndex: 7 },
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: peers,
+    strip: (text) => text,
+    details: stampDetails(2, 7),
+  });
+  assert(settle.action === "commit", "t27: held advice commits");
+  assert(
+    settle.result.entries.length === 2 && settle.result.entries[0].customType === "peer-a",
+    "t27: the settle commit keeps the settle event's peer spread",
+  );
+  const draft = settle.result.entries[1];
+  assert(
+    draft.type === "custom_message" &&
+      draft.content === "async advice" &&
+      draft.details?.fire === "2" &&
+      draft.details?.turn === "7",
+    "t27: the draft rides the stamp with the fire-time turn index",
+  );
+  assert(
+    !("continue" in settle.result),
+    "t27: the settle result carries NO continue key (never wakes an idle agent)",
+  );
+  const blocking = buildCorrection(
+    "advisor-turn-gate",
+    "async advice",
+    true,
+    peers,
+    stampDetails(2, 7),
+  );
+  assert(
+    JSON.stringify(draft) === JSON.stringify(blocking.entries[1]),
+    "t27: the settle draft is byte-equal to the blocking draft",
+  );
+}
+{
+  // The strip thunk runs on the held text before the commit.
+  const marked = planSettle({
+    held: { outcome: { ok: true, text: "advice" }, turnIndex: 1 },
+    customType: "ct",
+    display: true,
+    peerEntries: [],
+    strip: (text) => `<${text}>`,
+    details: stampDetails(1, 1),
+  });
+  assert(
+    marked.action === "commit" && marked.result.entries[0].content === "<advice>",
+    "t27: the strip runs on the held text",
+  );
+}
+{
+  // The failure arm notifies in the exact reportFailure format.
+  const failed = planSettle({
+    held: { outcome: { ok: false, reason: "advisor stopped with error" }, turnIndex: 3 },
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: [],
+    strip: (text) => text,
+    details: stampDetails(1, 3),
+  });
+  assert(
+    failed.action === "notify" &&
+      failed.message === "advisor-turn-gate: advisor stopped with error",
+    "t27: a failed held call notifies in the exact format",
+  );
+  // The husk arm: markup-only advice fails open exactly like the blocking path
+  // (the real strip's husk behavior is pinned at t15b/t9; a thunk isolates this arm).
+  const husk = planSettle({
+    held: { outcome: { ok: true, text: "markup husk" }, turnIndex: 4 },
+    customType: "advisor-turn-gate",
+    display: true,
+    peerEntries: [],
+    strip: () => "",
+    details: stampDetails(1, 4),
+  });
+  assert(
+    husk.action === "notify" && husk.message === "advisor-turn-gate: advisor reply was markup only",
+    "t27: a markup-only held reply notifies the husk message",
+  );
+}
+
+// --- 27c. the asyncMode field rides the same narrowing doors (extends
+//          t5/t7/t21c/t22c/t23c/t25c/t26c).
+{
+  const wrong = withConfig(JSON.stringify({ asyncMode: "yes", interval: 7 }), () => loadConfig());
+  assert(
+    wrong.asyncMode === false && wrong.interval === 7,
+    "t27c: a wrong-typed asyncMode falls back, leaving neighbors intact",
+  );
+  const on = withConfig(JSON.stringify({ asyncMode: true }), () => loadConfig());
+  assert(on.asyncMode === true, "t27c: asyncMode true survives");
+  const silent = captureWarn(() =>
+    withConfig(JSON.stringify({ asyncMode: 1 }), () => loadConfig()),
+  );
+  assert(silent.length === 0, "t27c: a wrong-typed asyncMode never warns");
+  assert(DEFAULT_CONFIG.asyncMode === false, "t27c: the code default is blocking (async off)");
 }

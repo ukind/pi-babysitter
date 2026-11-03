@@ -1,0 +1,53 @@
+{
+  "name": "dialogue-keys",
+  "pillar": "FR1+FR2",
+  "config": {
+    "model": "stub/stub-model",
+    "interval": 10,
+    "timeoutMs": 1000,
+    "memoryCap": 5
+  },
+  "priorEntries": [
+    {
+      "timestamp": 100,
+      "text": "Earlier fire: extract the retry helper before widening the loop."
+    }
+  ],
+  "turns": [
+    {
+      "turnIndex": 9,
+      "outcome": "completed",
+      "llmMessages": [
+        { "role": "system", "content": "You are the executor.", "timestamp": 1 },
+        {
+          "role": "user",
+          "content": [{ "type": "text", "text": "The sync loop is in. Review it." }],
+          "timestamp": 2
+        },
+        {
+          "role": "assistant",
+          "content": [{ "type": "text", "text": "The sync loop landed with its own retry path." }],
+          "timestamp": 3
+        }
+      ],
+      "facade": [
+        {
+          "stopReason": "stop",
+          "content": [
+            {
+              "type": "text",
+              "text": "The sync loop grew a second retry path beside the extracted helper. Keep one retry path and cap attempts at 3."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "continuation": { "turnIndex": 10, "outcome": "completed" },
+  "expect": {
+    "commits": 1,
+    "details": { "fire": "1", "turn": "9" },
+    "digestIncludes": "Earlier fire"
+  },
+  "scores": ["repeats-avoided", "dialogue-keys", "advice-adopted"]
+}

@@ -1,0 +1,57 @@
+{
+  "name": "tool-use-script",
+  "pillar": "FR4",
+  "config": {
+    "model": "stub/stub-model",
+    "interval": 10,
+    "timeoutMs": 1000,
+    "toolsEnabled": true,
+    "maxToolRounds": 3
+  },
+  "sandboxFiles": {
+    "docs/notes.md": "The rate limiter caps retries at 3 per minute."
+  },
+  "turns": [
+    {
+      "turnIndex": 9,
+      "outcome": "completed",
+      "llmMessages": [
+        { "role": "system", "content": "You are the executor.", "timestamp": 1 },
+        {
+          "role": "user",
+          "content": [{ "type": "text", "text": "Why do the sync retries stall?" }],
+          "timestamp": 2
+        },
+        {
+          "role": "assistant",
+          "content": [{ "type": "text", "text": "I wrote docs/notes.md while investigating." }],
+          "timestamp": 3
+        }
+      ],
+      "facade": [
+        {
+          "stopReason": "toolUse",
+          "content": [
+            {
+              "type": "toolCall",
+              "id": "call-1",
+              "name": "read_file",
+              "arguments": { "path": "docs/notes.md" }
+            }
+          ]
+        },
+        {
+          "stopReason": "stop",
+          "content": [
+            {
+              "type": "text",
+              "text": "The rate limiter caps retries at 3 per minute, and the sync loop burns all 3 on one batch. Space the batches or raise the cap deliberately."
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "expect": { "commits": 1, "facadeCalls": 2, "adviceIncludes": "caps retries at 3 per minute" },
+  "scores": ["sandbox-read-applied"]
+}

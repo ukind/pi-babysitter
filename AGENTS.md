@@ -6,7 +6,7 @@ advice as a `custom_message` entry in the durable transcript.
 
 ## What it does
 
-- Fires on `turn_end` when the turn completed and the cadence modulo matches.
+- Fires on `turn_end` when the turn completed and the cadence latch is due (`turnIndex >= lastFiredTurn + interval`).
 - Skips child sessions via the `<active_agent name="..."/>` marker veto.
 - Calls the advisor model through Pi's auth-aware `completeSimple` facade.
 - Strips fake tool-call markup from the reply before committing.

@@ -3,7 +3,7 @@ import type { Message } from "@earendil-works/pi-ai";
 /**
  * prompt.ts — context shaping for the advisor call.
  *
- * The advisor receives the executor's full projected context, minus the tool
+ * The advisor receives the executor's projected context, minus the tool
  * declarations that would let it call tools. Shapes are copied from
  * `@juicesharp/rpiv-advisor/advisor/context.ts:31-56`; nothing is imported.
  *
@@ -58,6 +58,99 @@ export function stripToolDeclarations(messages: Message[]): Message[] {
   });
 }
 
+/** Chars-per-token divisor for the size estimate (FR7, the settled chars/4 decision). */
+const CHARS_PER_TOKEN = 4;
+
+/**
+ * The fold marker's reserved budget, in estimated tokens.
+ *
+ * The estimate door is the SAME one every message goes through — chars/4 over the
+ * JSON-rendered MESSAGE, wrapper included — so the bound must count the wrapper: the
+ * marker text is at most ~107 characters (16-char prefix and separator space, a count
+ * of at most seven digits, fixed wording), and the JSON wrapper adds at most ~80 more,
+ * so the marker estimates under 50 tokens. The allowance is 64, and the fold accounts
+ * for it while choosing what to fold, so a fold that fits is guaranteed to fit WITH the
+ * marker included.
+ */
+const MARKER_TOKEN_ALLOWANCE = 64;
+
+/** Exact prefix of the fold-marker message; the tests pin it. */
+export const BUDGET_FOLD_MARKER_PREFIX = "[context folded]";
+
+/**
+ * Estimate one message's token cost: its JSON-rendered characters / 4, rounded up.
+ *
+ * Lexical, deterministic, offline — the settled FR7 decision. Calibration rides the
+ * eval harness (Slice 8) once its scores demand it.
+ */
+export function estimateMessageTokens(message: Message): number {
+  return Math.ceil(JSON.stringify(message).length / CHARS_PER_TOKEN);
+}
+
+/**
+ * Fold the earliest non-system messages into one marker until the payload fits the budget.
+ *
+ * Invariants, in priority order:
+ *   1. tokenBudget <= 0 (the default) is the identity — today's behavior, byte for byte.
+ *   2. Every system message survives; they carry the replay chains the advisor reads.
+ *   3. The last message never folds — the tail stays verbatim.
+ *   4. The fold walks oldest-first and stops as soon as the kept total (marker
+ *      allowance included) fits, so the verbatim tail is as long as the budget allows.
+ *
+ * Best-effort by design: a context of only system messages, or one whose systems plus
+ * tail already exceed the budget, comes back unfolded or still over — the invariants
+ * above win over the number.
+ */
+export function applyTokenBudget(messages: Message[], tokenBudget: number): Message[] {
+  if (!Number.isFinite(tokenBudget) || tokenBudget <= 0) return messages;
+  if (messages.length === 0) return messages;
+  const sizes = messages.map(estimateMessageTokens);
+  const total = sizes.reduce((sum, size) => sum + size, 0);
+  if (total <= tokenBudget) return messages;
+
+  const foldedIndices: number[] = [];
+  let foldedTokens = 0;
+  for (let i = 0; i < messages.length - 1; i += 1) {
+    const message = messages[i];
+    if (message === undefined || message.role === "system") continue;
+    const size = sizes[i];
+    if (size === undefined) continue;
+    foldedIndices.push(i);
+    foldedTokens += size;
+    if (total - foldedTokens + MARKER_TOKEN_ALLOWANCE <= tokenBudget) break;
+  }
+  if (foldedIndices.length === 0) return messages;
+
+  const foldSet = new Set(foldedIndices);
+  const firstIndex = foldedIndices[0];
+  if (firstIndex === undefined) return messages;
+  const firstFolded = messages[firstIndex] as { timestamp?: number } | undefined;
+  if (!firstFolded) return messages;
+
+  const marker: Message = {
+    role: "user",
+    content: [
+      {
+        type: "text",
+        text:
+          BUDGET_FOLD_MARKER_PREFIX +
+          " " +
+          foldedIndices.length +
+          " earliest message(s) folded to fit the token budget. Everything below is verbatim.",
+      },
+    ],
+    timestamp: firstFolded.timestamp ?? 0,
+  };
+  // The marker leads the result: its own text promises "Everything below is
+  // verbatim", which is literally true only when it sits above every kept
+  // message. The kept messages keep their relative order; the marker carries the
+  // first folded message's timestamp (t22 pins the exact shape).
+  const result: Message[] = [marker];
+  for (const [i, message] of messages.entries()) {
+    if (!foldSet.has(i)) result.push(message);
+  }
+  return result;
+}
 /**
  * Guarantee a user tail.
  *
@@ -76,9 +169,28 @@ export function ensureUserTail(messages: Message[]): Message[] {
 /**
  * Shape the executor's projected context for the advisor call.
  *
- * The full context is sent, not a trimmed window: the advisor is meant to catch drift
- * caused by early decisions, and a tail-only view cannot see them.
+ * Pipeline order is load-bearing (the settled window decision): the strip runs first so
+ * the fold sizes stripped messages, and the tail guarantee runs last so even a folded
+ * context ends on a user message. tokenBudget defaults to 0, where the fold is the
+ * identity and the full context is sent — the historical behavior, pinned by t10.
+ *
+ * With a budget set, the earliest non-system messages fold into one marker. Early
+ * decisions can scroll out of view; that is the deliberate trade — a bounded payload
+ * the provider accepts beats an unbounded one it rejects.
+ *
+ * The optional digest (FR2) is a synthetic system message inserted in front of the
+ * payload's final message: the tail the tail guarantee produced — the nudge, when one
+ * rides — stays terminal, the per-fire data sits at the recency end, and the digest is
+ * never a fold candidate because it joins after the fold has run.
  */
-export function buildAdvisorMessages(llmMessages: Message[]): Message[] {
-  return ensureUserTail(stripToolDeclarations(llmMessages));
+export function buildAdvisorMessages(
+  llmMessages: Message[],
+  tokenBudget = 0,
+  digest?: Message,
+): Message[] {
+  const shaped = ensureUserTail(applyTokenBudget(stripToolDeclarations(llmMessages), tokenBudget));
+  if (!digest) return shaped;
+  const tail = shaped.at(-1);
+  if (tail === undefined) return [digest];
+  return [...shaped.slice(0, -1), digest, tail];
 }

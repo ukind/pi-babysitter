@@ -44,8 +44,17 @@
  * user-global settings, outside this repository — this repo cannot reach or fix it.
  * It matches nothing in the installed package. The offline test asserts
  * this pattern matches the live literal and rejects that stale one.
+ *
+ * The name class requires at least one alphanumeric character. The loose [^"]*
+ * form matched this repo own AGENTS.md prose - the sentence documenting this veto
+ * carries the literal <active_agent name="..."/> tag - and that "..." placeholder
+ * rode the assembled system prompt of every session in this repository, so the gate
+ * vetoed itself silently on every turn (the 2026-11-03 live diagnosis).
+ * Placeholder-only names stay inert. A doc example carrying a realistic name would
+ * still match, and that residual false positive is the accepted fail-safe bias: a
+ * missed child costs a billed call, a false positive costs the gate.
  */
-export const CHILD_MARKER_PATTERN = /<active_agent\s+name="[^"]*"\s*\/>/;
+export const CHILD_MARKER_PATTERN = /<active_agent\s+name="[^"]*[A-Za-z0-9][^"]*"\s*\/>/;
 
 /** The slice of a system message the veto needs. Structural, so this module imports nothing. */
 interface SystemMessageLike {
