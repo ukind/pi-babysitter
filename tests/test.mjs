@@ -89,6 +89,7 @@ import {
   buildAdvisorMessages,
   ensureUserTail,
   estimateMessageTokens,
+  keepAdvisorRoles,
   stripToolDeclarations,
 } from "../prompt.ts";
 import { reportFailure } from "../report.ts";
@@ -400,6 +401,14 @@ assert(
 // declaration, and biome rejects a declaration-free lone block (noUselessLoneBlockStatements).
 assert(/no tools/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default forbids tools");
 assert(/text only/.test(DEFAULT_CONFIG.systemPrompt), "t7b: the code default demands text only");
+assert(
+  /reasoning trace/.test(DEFAULT_CONFIG.systemPrompt),
+  "t7b: the code default scopes the role to the reasoning trace",
+);
+assert(
+  /outputs/.test(DEFAULT_CONFIG.systemPrompt),
+  "t7b: the code default scopes the role to the outputs",
+);
 assert(DEFAULT_CONFIG.display === true, "t7b: the display code default is true");
 
 // --- 8. the model-key parser: slash wins, colon is legacy, neither is undefined.
@@ -648,9 +657,9 @@ assert(
   );
 }
 
-// --- 10. prompt assembly: tool deltas stripped, user tail guaranteed.
+// --- 10. prompt assembly: roles filtered first, tool deltas stripped, user tail guaranteed.
 {
-  const withDeltas = [
+  const withNoise = [
     {
       role: "system",
       content: "base",
@@ -659,15 +668,18 @@ assert(
       timestamp: 1,
     },
     { role: "user", content: "do it", timestamp: 2 },
-    { role: "assistant", content: [{ type: "text", text: "thinking" }], timestamp: 3 },
+    { role: "toolResult", content: [], timestamp: 3 },
+    { role: "assistant", content: [{ type: "text", text: "thinking" }], timestamp: 4 },
   ];
-  const out = buildAdvisorMessages(withDeltas);
-  assert(out[0].toolsAdded === undefined, "t10: toolsAdded is stripped");
-  assert(out[0].toolsRemoved === undefined, "t10: toolsRemoved is stripped");
-  assert(out[0].content === "base", "t10: the prompt text survives the strip");
+  const out = buildAdvisorMessages(withNoise);
+  assert(
+    out.length === 3,
+    "t10: the filter drops the system replay and the toolResult, then the nudge appends",
+  );
+  assert(out[0].content === "do it", "t10: the user message leads the filtered payload");
+  assert(out[1].content[0].text === "thinking", "t10: the assistant message survives in place");
   assert(out[out.length - 1].role === "user", "t10: a user tail is guaranteed");
-  assert(out.length === 4, "t10: the nudge is appended, not substituted");
-  assert(out[3].content[0].text === ADVISOR_NUDGE, "t10: the appended message is the nudge");
+  assert(out[2].content[0].text === ADVISOR_NUDGE, "t10: the appended message is the nudge");
   const noDeltas = [
     { role: "system", content: "base", timestamp: 1 },
     { role: "user", content: "x", timestamp: 2 },
@@ -685,6 +697,34 @@ assert(
     "t10: no nudge when the tail is not an assistant message",
   );
   assert(ensureUserTail([]).length === 0, "t10: an empty context stays empty");
+}
+
+// --- 10b. the role filter: the whitelist, both identity doors, by reference (FR2/FR4).
+{
+  const mixed = [
+    { role: "system", content: "s", timestamp: 1 },
+    { role: "user", content: [{ type: "text", text: "u" }], timestamp: 2 },
+    { role: "toolResult", content: [], timestamp: 3 },
+    { role: "assistant", content: [{ type: "text", text: "a" }], timestamp: 4 },
+  ];
+  const kept = keepAdvisorRoles(mixed);
+  assert(kept.length === 2, "t10b: only the user and assistant messages survive");
+  assert(kept[0] === mixed[1] && kept[1] === mixed[3], "t10b: survivors keep their references");
+  const clean = [
+    { role: "user", content: [{ type: "text", text: "u" }], timestamp: 1 },
+    { role: "assistant", content: [{ type: "text", text: "a" }], timestamp: 2 },
+  ];
+  assert(keepAdvisorRoles(clean) === clean, "t10b: an all-keep transcript returns the same array");
+  const floor = [
+    { role: "system", content: "s", timestamp: 1 },
+    { role: "toolResult", content: [], timestamp: 2 },
+  ];
+  assert(
+    keepAdvisorRoles(floor) === floor,
+    "t10b: nothing survives, so the original array returns",
+  );
+  const emptyArr = [];
+  assert(keepAdvisorRoles(emptyArr) === emptyArr, "t10b: an empty transcript is the identity");
 }
 
 // --- 11. the child-session veto. The first case is the regression test for the bug where
@@ -1631,7 +1671,10 @@ for (const [name, response, check] of runCases) {
     plain.length === explicit.length && shapeJson(plain) === shapeJson(explicit),
     "t22: the default budget equals an explicit 0",
   );
-  assert(plain.length === 3, "t22: with no budget the nudge still appends (t10 re-pin)");
+  assert(
+    plain.length === 2,
+    "t22: the system is filtered out, so the payload is the assistant plus the nudge",
+  );
 
   // Strip, fold, tail: a folding context still ends on the user nudge.
   const windowed = buildAdvisorMessages(
@@ -1643,18 +1686,33 @@ for (const [name, response, check] of runCases) {
     "t22: the nudge is appended after a fold (strip, fold, tail order)",
   );
 
-  // The strip still runs inside the budgeted pipeline: the delta key is gone.
-  const fatDelta = {
-    role: "system",
-    content: "s",
-    toolsAdded: [{ name: "x".repeat(400) }],
-    timestamp: 1,
-  };
-  const budgeted = buildAdvisorMessages([fatDelta, m("user", "u", 2)], 10000);
+  // The filter runs before the fold: the huge system never counts toward the budget,
+  // so no marker leads and the payload fits without folding.
+  const bigSystem = m("system", "s".repeat(4000), 1);
+  const ordered = buildAdvisorMessages([bigSystem, m("user", "u", 2), m("assistant", "a", 3)], 50);
   assert(
-    budgeted[0].toolsAdded === undefined,
-    "t22: the strip still runs inside the budgeted pipeline",
+    ordered[0].content[0].text === "u",
+    "t22: no fold marker leads — the fold sized the filtered payload",
   );
+  assert(
+    ordered.length === 3,
+    "t22: the filtered payload fits the budget, so only the nudge appended",
+  );
+
+  // The strip stays load-bearing on the filter's identity floor: a payload where no
+  // user or assistant message survives returns from the filter with deltas intact.
+  const floored = buildAdvisorMessages(
+    [
+      { role: "system", content: "s", toolsAdded: [{ name: "x".repeat(400) }], timestamp: 1 },
+      { role: "toolResult", content: [], timestamp: 2 },
+    ],
+    10000,
+  );
+  assert(
+    floored[0].toolsAdded === undefined && floored[0].content === "s",
+    "t22: the floor path still strips the deltas and keeps the prompt text",
+  );
+  assert(floored.length === 2, "t22: the floor path adds no nudge after a toolResult tail");
 }
 
 // --- 22c. the tokenBudget field rides the same clamp/narrowing doors (extends t5/t7/t21c).

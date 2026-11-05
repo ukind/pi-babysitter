@@ -3,8 +3,10 @@ import type { Message } from "@earendil-works/pi-ai";
 /**
  * prompt.ts — context shaping for the advisor call.
  *
- * The advisor receives the executor's projected context, minus the tool
- * declarations that would let it call tools. Shapes are copied from
+ * The advisor receives the executor's reasoning trace only: the role filter keeps
+ * user and assistant messages and drops the system replay chains and toolResult
+ * entries that would read as a tool-using conversation. A later pass strips the
+ * tool declarations that would let it call tools. Shapes are copied from
  * `@juicesharp/rpiv-advisor/advisor/context.ts:31-56`; nothing is imported.
  *
  * The pi-ai import is TYPE-only, so it is erased before the module runs and the offline
@@ -26,6 +28,34 @@ import type { Message } from "@earendil-works/pi-ai";
  */
 export const ADVISOR_NUDGE = "Advise on the work above.";
 
+/** True when a message is part of the reasoning trace the advisor is meant to read. */
+function isAdvisorRole(message: Message): boolean {
+  return message.role === "user" || message.role === "assistant";
+}
+
+/**
+ * Keep only the reasoning trace: user and assistant messages (FR2).
+ *
+ * The executor's transcript replays its own system prompt and tool loadout as system
+ * messages, and toolResult chains read as a tool-using conversation. Both are the
+ * mimicry substrate behind the markup-only failure: a payload that looks like a tool
+ * conversation invites a tool-trained model to answer with tool-call markup as plain
+ * text. The whitelist form also drops any future role by default. No config toggle:
+ * the advisor reads the trace and the outputs, nothing else (FRD role note).
+ *
+ * Two identity doors (FR4):
+ *   1. An all-keep transcript returns unchanged — the SAME array, no allocation.
+ *   2. A transcript where nothing survives returns the ORIGINAL array — an empty
+ *      payload must never reach the provider, and the strip downstream stays
+ *      load-bearing on exactly this path (the returned system messages carry the
+ *      tool deltas it removes). Pinned by t10b and the t22 floor-path pins.
+ */
+export function keepAdvisorRoles(messages: Message[]): Message[] {
+  if (messages.every(isAdvisorRole)) return messages;
+  const kept = messages.filter(isAdvisorRole);
+  return kept.length > 0 ? kept : messages;
+}
+
 /** True when a system message carries tool deltas that would make the executor's tools callable. */
 function hasToolDeclarations(message: Message): boolean {
   if (message.role !== "system") return false;
@@ -41,6 +71,11 @@ function hasToolDeclarations(message: Message): boolean {
  * those deltas. `tools: []` on the request alone therefore leaves the executor's tools
  * callable, and the advisor can stop on a `toolUse` with no text. Drop the deltas, keep
  * the prompt text.
+ *
+ * In the shaped pipeline this pass now serves the identity floor of `keepAdvisorRoles`:
+ * only a payload where no user or assistant message survives still carries system
+ * messages, and those are exactly the ones the floor returns untouched. Pinned
+ * through the floor path by t22; the filter's floor door by t10b.
  */
 export function stripToolDeclarations(messages: Message[]): Message[] {
   if (!messages.some(hasToolDeclarations)) return messages;
@@ -92,7 +127,9 @@ export function estimateMessageTokens(message: Message): number {
  *
  * Invariants, in priority order:
  *   1. tokenBudget <= 0 (the default) is the identity — today's behavior, byte for byte.
- *   2. Every system message survives; they carry the replay chains the advisor reads.
+ *   2. Every system message survives. The role filter upstream means the normal
+ *      pipeline payload carries none; the survivors are the floor path's original
+ *      systems, and those must never fold.
  *   3. The last message never folds — the tail stays verbatim.
  *   4. The fold walks oldest-first and stops as soon as the kept total (marker
  *      allowance included) fits, so the verbatim tail is as long as the budget allows.
@@ -169,10 +206,12 @@ export function ensureUserTail(messages: Message[]): Message[] {
 /**
  * Shape the executor's projected context for the advisor call.
  *
- * Pipeline order is load-bearing (the settled window decision): the strip runs first so
- * the fold sizes stripped messages, and the tail guarantee runs last so even a folded
- * context ends on a user message. tokenBudget defaults to 0, where the fold is the
- * identity and the full context is sent — the historical behavior, pinned by t10.
+ * Pipeline order is load-bearing (the settled window decision): the role filter runs
+ * first so the fold sizes the filtered payload, the strip follows (it is load-bearing
+ * only on the filter's identity floor, where system messages survive), and the tail
+ * guarantee runs last so even a folded context ends on a user message. tokenBudget
+ * defaults to 0, where the fold is the identity and the full context is sent — the
+ * historical behavior, pinned by t22.
  *
  * With a budget set, the earliest non-system messages fold into one marker. Early
  * decisions can scroll out of view; that is the deliberate trade — a bounded payload
@@ -188,7 +227,9 @@ export function buildAdvisorMessages(
   tokenBudget = 0,
   digest?: Message,
 ): Message[] {
-  const shaped = ensureUserTail(applyTokenBudget(stripToolDeclarations(llmMessages), tokenBudget));
+  const shaped = ensureUserTail(
+    applyTokenBudget(stripToolDeclarations(keepAdvisorRoles(llmMessages)), tokenBudget),
+  );
   if (!digest) return shaped;
   const tail = shaped.at(-1);
   if (tail === undefined) return [digest];

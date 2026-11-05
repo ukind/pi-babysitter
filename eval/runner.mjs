@@ -80,10 +80,22 @@ const SCORES = {
     const markerRan = built.some((message) =>
       messageText(message).startsWith(BUDGET_FOLD_MARKER_PREFIX),
     );
-    const systemsKept = fixture.systemTexts.every((text) =>
+    const narrowed = built.every(
+      (message) => message.role === "user" || message.role === "assistant",
+    );
+    const survivorsKept = fixture.keptTexts.every((text) =>
       built.some((message) => messageText(message).includes(text)),
     );
-    return markerRan && systemsKept && total <= fixture.config.tokenBudget + MARKER_SLACK;
+    const systemsDropped = fixture.systemTexts.every(
+      (text) => !built.some((message) => messageText(message).includes(text)),
+    );
+    return (
+      markerRan &&
+      narrowed &&
+      survivorsKept &&
+      systemsDropped &&
+      total <= fixture.config.tokenBudget + MARKER_SLACK
+    );
   },
   "sandbox-read-applied": (replay, fixture) => {
     const entry = replay.commits.at(-1);

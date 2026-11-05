@@ -1,6 +1,6 @@
 # Project Overview
 
-advisor-turn-gate is a pi coding-agent extension. Every N completed turns it sends the projected transcript to an advisor model (`tools: []`) and commits the answer as a `custom_message` entry with a forced continuation. TypeScript strict, zero runtime npm dependencies, Node >= 22.6.
+advisor-turn-gate is a pi coding-agent extension. Every N completed turns it sends the transcript's user and assistant turns to an advisor model (`tools: []`) and commits the answer as a `custom_message` entry with a forced continuation. TypeScript strict, zero runtime npm dependencies, Node >= 22.6.
 
 Status: further tech-debt commits are expected after `236cc25`. Treat the code as canonical; re-check details against source.
 
@@ -12,7 +12,7 @@ Single package, hub-and-spoke. `index.ts` is the only file the runtime loads; ev
 [pi host] ──loads─> index.ts  (factory closure: turn_end hook, cadence latch, THE single await)
                     ├─ config.ts     # config.json read/clamp/parse per dispatch (only node:fs import)
                     ├─ plan-turn.ts  # PURE cores planGate/planCommit; thunk-injected (zero runtime imports)
-                    ├─ prompt.ts     # context shaper: strip tool deltas, ensure user tail (zero imports)
+                    ├─ prompt.ts     # context shaper: filter roles, strip tool deltas, ensure user tail (zero imports)
                     ├─ advisor.ts    # model adapter: duck-typed completeSimple, deadline, markup strip
                     ├─ guard.ts      # child-session veto: marker regex over system msgs (zero imports)
                     └─ report.ts     # hasUI-gated ui.notify failure reporting (zero imports)

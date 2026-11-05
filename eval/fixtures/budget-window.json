@@ -8,6 +8,7 @@
     "tokenBudget": 500
   },
   "systemTexts": ["SYSTEM ONE", "SYSTEM TWO"],
+  "keptTexts": ["a2: the gate now nests", "Latest note: the retry loop stalls"],
   "turns": [
     {
       "turnIndex": 9,
@@ -61,6 +62,11 @@
               "text": "a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow. a2: the gate now nests and the helper is hard to follow."
             }
           ],
+          "timestamp": 6
+        },
+        {
+          "role": "toolResult",
+          "content": [],
           "timestamp": 6
         },
         {
