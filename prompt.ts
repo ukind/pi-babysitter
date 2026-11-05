@@ -3,10 +3,12 @@ import type { Message } from "@earendil-works/pi-ai";
 /**
  * prompt.ts — context shaping for the advisor call.
  *
- * The advisor receives the executor's reasoning trace only: the role filter keeps
- * user and assistant messages and drops the system replay chains and toolResult
- * entries that would read as a tool-using conversation. A later pass strips the
- * tool declarations that would let it call tools. Shapes are copied from
+ * The advisor receives the executor's reasoning trace plus its real tool evidence:
+ * inlineToolEvidence rewrites toolCall blocks into prose notes and non-empty
+ * toolResult outputs into [tool output] user lines in position, then the role filter
+ * keeps user and assistant messages and drops the system replay chains and the
+ * remaining empty toolResult entries. A later pass strips the tool declarations that
+ * would let it call tools. Shapes are copied from
  * `@juicesharp/rpiv-advisor/advisor/context.ts:31-56`; nothing is imported.
  *
  * The pi-ai import is TYPE-only, so it is erased before the module runs and the offline
@@ -54,6 +56,146 @@ export function keepAdvisorRoles(messages: Message[]): Message[] {
   if (messages.every(isAdvisorRole)) return messages;
   const kept = messages.filter(isAdvisorRole);
   return kept.length > 0 ? kept : messages;
+}
+
+/** Exact prefix of an inlined tool-output line; the tests pin it. */
+export const TOOL_OUTPUT_PREFIX = "[tool output]";
+
+/** Trailing line marking an errored tool output. */
+const TOOL_OUTPUT_ERROR_LINE = "[tool output ended in error]";
+
+/** The one placeholder standing in for every image block of a result. */
+const TOOL_OUTPUT_IMAGE_LINE = "[image output omitted]";
+
+/**
+ * The prose note that replaces one toolCall block, carrying name and arguments.
+ *
+ * Prose only: no angle-bracket vocabulary and no tag-shaped syntax, because the payload
+ * must not read as a tool conversation the advisor can imitate (the recorded anti-mimicry
+ * decision behind the role filter). Arguments render as JSON — braces and quotes are
+ * ordinary prose to a language model, and they carry the call's real shape verbatim.
+ */
+function toolCallNote(call: {
+  name?: unknown;
+  arguments?: unknown;
+  argumentsError?: unknown;
+}): string {
+  const name = typeof call.name === "string" && call.name ? call.name : "unknown tool";
+  let note = `Tool call: ${name}`;
+  if (call.arguments !== undefined) {
+    let rendered: string;
+    try {
+      rendered = JSON.stringify(call.arguments) ?? String(call.arguments);
+    } catch {
+      rendered = String(call.arguments);
+    }
+    note += ` with arguments ${rendered}`;
+  }
+  if (typeof call.argumentsError === "string" && call.argumentsError) {
+    note += ` (arguments could not be parsed: ${call.argumentsError})`;
+  }
+  return note;
+}
+
+/**
+ * The user-side text for one toolResult: the pinned prefix, the verbatim body, the
+ * error marker.
+ *
+ * Text blocks join with "\n"; every image block collapses into ONE placeholder line (an
+ * image is invisible to a text model no matter how many arrive). The name rides the
+ * prefix line so an output stays attributable to its call even when a fold or a dropped
+ * errored assistant breaks the adjacency.
+ */
+function toolOutputLines(result: {
+  toolName?: unknown;
+  content?: unknown;
+  isError?: unknown;
+}): string {
+  const name = typeof result.toolName === "string" && result.toolName ? result.toolName : "";
+  const lines = [name ? `${TOOL_OUTPUT_PREFIX} ${name}` : TOOL_OUTPUT_PREFIX];
+  const body: string[] = [];
+  let sawImage = false;
+  for (const block of Array.isArray(result.content) ? result.content : []) {
+    const typed = block as { type?: unknown; text?: unknown };
+    if (typed.type === "text" && typeof typed.text === "string") body.push(typed.text);
+    else if (typed.type === "image") sawImage = true;
+  }
+  if (body.length > 0) lines.push(body.join("\n"));
+  if (sawImage) lines.push(TOOL_OUTPUT_IMAGE_LINE);
+  if (result.isError === true) lines.push(TOOL_OUTPUT_ERROR_LINE);
+  return lines.join("\n");
+}
+
+/**
+ * Rewrite tool activity into prose evidence, in position.
+ *
+ * The pi-ai host transform (transform-messages.js, caret ^1.4.0) registers pending calls
+ * from assistant `toolCall` blocks and back-fills every unresolved one with a synthetic
+ * `isError: true` "No result provided" result at the next assistant message, any user
+ * message, or the end of the conversation. A narrowed payload that keeps the call blocks
+ * but drops the results therefore shows the advisor a fake failure beside every call —
+ * the fabrication-accusation regression. This pass removes the cause: each call block
+ * becomes a prose note in position and each non-empty toolResult becomes a user line in
+ * position, so no pending call survives and the back-fill cannot fire. Empty-content
+ * results (every fixture in the suite) pass through untouched and are dropped by the
+ * role filter downstream, which keeps every existing pin byte-identical.
+ *
+ * Evidence sits at the result's transcript position, after its call's note, so pairing
+ * reads in transcript order. On stopReason "error"/"aborted" the host drops the
+ * assistant, so the note dies while the user line survives — accepted (the FRD records
+ * it): the named prefix line keeps the output attributable.
+ *
+ * Copy-on-write, like every pass here: untouched messages return by reference, rebuilt
+ * ones are fresh objects, and the live transcript (`index.ts:92`) is never mutated.
+ */
+export function inlineToolEvidence(messages: Message[]): Message[] {
+  const carriesToolActivity = (message: Message): boolean => {
+    if (message.role === "toolResult") {
+      return Array.isArray(message.content) && message.content.length > 0;
+    }
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return false;
+    return message.content.some((block) => (block as { type?: unknown }).type === "toolCall");
+  };
+  if (!messages.some(carriesToolActivity)) return messages;
+  return messages.map((message) => {
+    if (message.role === "toolResult") {
+      if (!Array.isArray(message.content) || message.content.length === 0) return message;
+      const timestamp = (message as { timestamp?: number }).timestamp;
+      return {
+        role: "user",
+        content: [
+          {
+            type: "text",
+            text: toolOutputLines(
+              message as {
+                toolName?: unknown;
+                content?: unknown;
+                isError?: unknown;
+              },
+            ),
+          },
+        ],
+        timestamp: timestamp ?? 0,
+      } as Message;
+    }
+    if (message.role !== "assistant" || !Array.isArray(message.content)) return message;
+    if (!message.content.some((block) => (block as { type?: unknown }).type === "toolCall")) {
+      return message;
+    }
+    return {
+      ...message,
+      content: message.content.map((block) => {
+        const typed = block as {
+          type?: unknown;
+          name?: unknown;
+          arguments?: unknown;
+          argumentsError?: unknown;
+        };
+        if (typed.type !== "toolCall") return block;
+        return { type: "text", text: toolCallNote(typed) };
+      }),
+    } as Message;
+  });
 }
 
 /** True when a system message carries tool deltas that would make the executor's tools callable. */
@@ -206,12 +348,13 @@ export function ensureUserTail(messages: Message[]): Message[] {
 /**
  * Shape the executor's projected context for the advisor call.
  *
- * Pipeline order is load-bearing (the settled window decision): the role filter runs
- * first so the fold sizes the filtered payload, the strip follows (it is load-bearing
- * only on the filter's identity floor, where system messages survive), and the tail
- * guarantee runs last so even a folded context ends on a user message. tokenBudget
- * defaults to 0, where the fold is the identity and the full context is sent — the
- * historical behavior, pinned by t22.
+ * Pipeline order is load-bearing (the settled window decision): the evidence inliner
+ * runs first so toolCall blocks never survive into the payload, the role filter runs
+ * next so the fold sizes the filtered payload (and drops the remaining empty
+ * toolResults), the strip follows (it is load-bearing only on the filter's identity
+ * floor, where system messages survive), and the tail guarantee runs last so even a
+ * folded context ends on a user message. tokenBudget defaults to 0, where the fold is
+ * the identity and the full context is sent — the historical behavior, pinned by t22.
  *
  * With a budget set, the earliest non-system messages fold into one marker. Early
  * decisions can scroll out of view; that is the deliberate trade — a bounded payload
@@ -228,7 +371,10 @@ export function buildAdvisorMessages(
   digest?: Message,
 ): Message[] {
   const shaped = ensureUserTail(
-    applyTokenBudget(stripToolDeclarations(keepAdvisorRoles(llmMessages)), tokenBudget),
+    applyTokenBudget(
+      stripToolDeclarations(keepAdvisorRoles(inlineToolEvidence(llmMessages))),
+      tokenBudget,
+    ),
   );
   if (!digest) return shaped;
   const tail = shaped.at(-1);

@@ -1,8 +1,9 @@
 # advisor-turn-gate
 
 A Pi coding-agent extension that runs a senior-engineer advisor on every N turns.
-It reads the projected transcript, calls a model with `tools: []`, and commits the
-advice as a `custom_message` entry in the durable transcript.
+It reads the projected transcript, inlines the executor's tool calls and their
+outputs as plain prose, calls a model with `tools: []`, and commits the advice as a
+`custom_message` entry in the durable transcript.
 
 ## What it does
 

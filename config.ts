@@ -55,7 +55,11 @@ export const DEFAULT_CONFIG: AdvisorGateConfig = {
     "is on track, say so briefly and stop. " +
     "You have no tools and cannot call any. Reply in text only: never write " +
     "tool-call markup, angle-bracket tool syntax, or anything that imitates a " +
-    "tool call. Supervise the reasoning trace in plain prose.",
+    "tool call. Supervise the reasoning trace in plain prose. " +
+    "Tool calls and their outputs reach you as plain prose: a note that names the " +
+    "call and its arguments, then a line that starts with [tool output] and carries " +
+    "the output verbatim. A trailing [tool output ended in error] line marks a " +
+    "failed output.",
   customType: "advisor-turn-gate",
   display: true,
   triggerMinNewTokens: 0,

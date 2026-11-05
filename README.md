@@ -1,8 +1,9 @@
 # advisor-turn-gate
 
 A Pi coding-agent extension that runs a senior-engineer advisor on every N turns.
-It reads the projected transcript, calls a model with `tools: []`, and commits the
-advice as a `custom_message` entry in the durable transcript.
+It reads the projected transcript, inlines the executor's tool calls and their
+outputs as plain prose, calls a model with `tools: []`, and commits the advice as a
+`custom_message` entry in the durable transcript.
 
 ## Setup
 
@@ -25,7 +26,7 @@ clamped into range, with a one-time warning.
 | `interval`               | `2`                   | Advisor runs on the first completed turn at or past each N-turn boundary. Clamped 1-100.                                                                        |
 | `model`                  | `""` (disabled)       | `provider/modelId` of the advisor model. Empty or unparseable disables the gate.                                                                                |
 | `timeoutMs`              | `60000`               | Advisor call budget in milliseconds. Clamped 1000-60000.                                                                                                        |
-| `systemPrompt`           | code default          | Optional override, not shipped — the code default is the single source.                                                                                         |
+| `systemPrompt`           | code default          | Optional override. The code default is the single source; `config.example.json` carries a copy for reference.                                                   |
 | `customType`             | `"advisor-turn-gate"` | The committed guidance entry's custom type.                                                                                                                     |
 | `display`                | `true`                | Whether the committed entry renders in the TUI transcript.                                                                                                      |
 | `triggerMinNewTokens`    | `0` (disabled)        | Fire before the next boundary when a finished turn grew by this many tokens. Clamped 0-100000.                                                                  |

@@ -89,8 +89,10 @@ import {
   buildAdvisorMessages,
   ensureUserTail,
   estimateMessageTokens,
+  inlineToolEvidence,
   keepAdvisorRoles,
   stripToolDeclarations,
+  TOOL_OUTPUT_PREFIX,
 } from "../prompt.ts";
 import { reportFailure } from "../report.ts";
 import {
@@ -409,6 +411,10 @@ assert(
   /outputs/.test(DEFAULT_CONFIG.systemPrompt),
   "t7b: the code default scopes the role to the outputs",
 );
+assert(
+  /\[tool output\]/.test(DEFAULT_CONFIG.systemPrompt),
+  "t7b: the code default documents the [tool output] convention",
+);
 assert(DEFAULT_CONFIG.display === true, "t7b: the display code default is true");
 
 // --- 8. the model-key parser: slash wins, colon is legacy, neither is undefined.
@@ -725,6 +731,197 @@ assert(
   );
   const emptyArr = [];
   assert(keepAdvisorRoles(emptyArr) === emptyArr, "t10b: an empty transcript is the identity");
+}
+
+// --- 10c. inlineToolEvidence: the sixth identity-door pass. The zero-toolCall pin is
+//          RED-FIRST and decisive: on the pre-fix pipeline (no pass composed) the shaped
+//          payload still carries the assistant toolCall blocks, so it fails. No toolCall
+//          block means the host transform registers no pending call, so its synthetic
+//          "No result provided" back-fill cannot fire. The literal-text pin beside it is
+//          NOT red-first (the synthetic is injected host-side, after shaping) and says so
+//          in its own message. These are the first pins in the suite that assert what the
+//          provider sees rather than what the shaper returns — the gap 2514358 walked
+//          through.
+{
+  // The identity door: a transcript with no tool activity returns the SAME array. The
+  // empty-content toolResult is the shape every existing fixture carries, so this door
+  // is what keeps t10, t10b, t22, t23, and t7b byte-identical.
+  const quiet = [
+    { role: "system", content: "s", timestamp: 1 },
+    { role: "user", content: [{ type: "text", text: "u" }], timestamp: 2 },
+    { role: "toolResult", content: [], timestamp: 3 },
+    { role: "assistant", content: [{ type: "text", text: "a" }], timestamp: 4 },
+  ];
+  assert(inlineToolEvidence(quiet) === quiet, "t10c: no tool activity returns the same array");
+  const emptyArr = [];
+  assert(inlineToolEvidence(emptyArr) === emptyArr, "t10c: an empty transcript is the identity");
+
+  // The call rewrite: blocks become prose notes in position, text blocks keep their
+  // references, and the input array is never mutated (index.ts:92 passes the live one).
+  const calls = [
+    { role: "user", content: [{ type: "text", text: "run it" }], timestamp: 1 },
+    {
+      role: "assistant",
+      content: [
+        { type: "text", text: "checking the file" },
+        { type: "toolCall", id: "c1", name: "read_file", arguments: { path: "src/auth.ts" } },
+        { type: "text", text: "now the test" },
+        { type: "toolCall", id: "c2", name: "broken_tool", argumentsError: "bad JSON" },
+      ],
+      timestamp: 2,
+      stopReason: "toolUse",
+    },
+  ];
+  const inlined = inlineToolEvidence(calls);
+  assert(inlined[0] === calls[0], "t10c: untouched messages keep their references");
+  assert(inlined[1] !== calls[1], "t10c: the rebuilt assistant is a fresh object");
+  const blocks = inlined[1].content;
+  assert(blocks[0] === calls[1].content[0], "t10c: text blocks keep their references");
+  assert(
+    blocks[1].type === "text" &&
+      blocks[1].text === 'Tool call: read_file with arguments {"path":"src/auth.ts"}',
+    "t10c: the note carries the tool name and its JSON arguments",
+  );
+  assert(blocks[2] === calls[1].content[2], "t10c: a mid text block stays in place");
+  assert(
+    blocks[3].type === "text" &&
+      blocks[3].text === "Tool call: broken_tool (arguments could not be parsed: bad JSON)",
+    "t10c: an argumentsError rides the note",
+  );
+  assert(calls[1].content[1].type === "toolCall", "t10c: the input array is never mutated");
+  assert(inlined[1].timestamp === 2, "t10c: the rebuilt assistant keeps its timestamp");
+
+  // The output rewrite: prefix + name, verbatim multi-block join, one image placeholder,
+  // the error marker trailing, and the source timestamp propagated.
+  const errored = [
+    {
+      role: "toolResult",
+      toolCallId: "c1",
+      toolName: "read_file",
+      content: [
+        { type: "text", text: "line one" },
+        { type: "text", text: "line two" },
+        { type: "image", source: {} },
+        { type: "image", source: {} },
+      ],
+      isError: true,
+      timestamp: 7,
+    },
+  ];
+  const [outLine] = inlineToolEvidence(errored);
+  assert(outLine.role === "user", "t10c: a non-empty toolResult ships as a user message");
+  assert(outLine.timestamp === 7, "t10c: the source timestamp propagates");
+  const outText = outLine.content[0].text;
+  assert(
+    outText.startsWith(`${TOOL_OUTPUT_PREFIX} read_file\n`),
+    "t10c: the pinned prefix and the tool name lead the line",
+  );
+  assert(outText.includes("line one\nline two"), "t10c: multi-block text joins with a newline");
+  assert(
+    outText.split("[image output omitted]").length - 1 === 1,
+    "t10c: every image collapses into one placeholder line",
+  );
+  assert(
+    outText.endsWith("[tool output ended in error]"),
+    "t10c: an errored output carries the trailing error marker",
+  );
+
+  // The degradation doors: an empty tool name yields the bare prefix, and a call with
+  // no arguments renders no arguments clause.
+  const nameless = inlineToolEvidence([
+    { role: "toolResult", toolName: "", content: [{ type: "text", text: "x" }], timestamp: 1 },
+  ]);
+  assert(
+    nameless[0].content[0].text === `${TOOL_OUTPUT_PREFIX}\nx`,
+    "t10c: an empty tool name degrades to the bare prefix",
+  );
+  const noArgs = inlineToolEvidence([
+    { role: "assistant", content: [{ type: "toolCall", id: "c", name: "noop" }], timestamp: 1 },
+  ]);
+  assert(
+    noArgs[0].content[0].text === "Tool call: noop",
+    "t10c: a call with no arguments renders no arguments clause",
+  );
+
+  // The composed pin: evidence rides the shaped payload, the empty toolResult still
+  // drops, the nudge stays terminal, and the output line sits right after its note.
+  const transcript = [
+    { role: "system", content: "base", toolsAdded: [{ name: "read" }], timestamp: 0 },
+    { role: "user", content: [{ type: "text", text: "work" }], timestamp: 1 },
+    {
+      role: "assistant",
+      content: [{ type: "toolCall", id: "c1", name: "read_file", arguments: {} }],
+      timestamp: 2,
+    },
+    {
+      role: "toolResult",
+      toolCallId: "c1",
+      toolName: "read_file",
+      content: [{ type: "text", text: "file body" }],
+      isError: false,
+      timestamp: 3,
+    },
+    { role: "toolResult", content: [], timestamp: 4 },
+    { role: "assistant", content: [{ type: "text", text: "done" }], timestamp: 5 },
+  ];
+  const shaped = buildAdvisorMessages(transcript);
+  const shapedJson = JSON.stringify(shaped);
+  // Non-vacuity first: the fixture really carries a toolCall block, so the zero pin
+  // below cannot pass because there was nothing to rewrite.
+  assert(
+    transcript.some(
+      (m) =>
+        m.role === "assistant" &&
+        Array.isArray(m.content) &&
+        m.content.some((b) => b.type === "toolCall"),
+    ),
+    "t10c: the fixture really carries a toolCall block, so the zero pin is not vacuous",
+  );
+  // THE decisive pin, and the only red-first one: with the pass uncomposed the shaped
+  // payload still carries the assistant toolCall blocks and this assert fails. No
+  // toolCall block means the host transform registers no pending call, so its synthetic
+  // "No result provided" back-fill cannot fire.
+  assert(
+    !shapedJson.includes('"toolCall"'),
+    "t10c: the shaped payload carries zero toolCall items (provider-visible, red-first)",
+  );
+  // A literal-text guard, NOT a second decisive pin: the synthetic string is injected
+  // host-side after shaping, so this assert passes on the pre-fix pipeline too. It
+  // catches only a future change that writes the literal into the payload itself.
+  assert(
+    !shapedJson.includes("No result provided"),
+    "t10c: the shaped payload never carries the synthetic back-fill text literally",
+  );
+  assert(
+    shaped.some(
+      (m) =>
+        m.role === "assistant" && m.content[0].text === "Tool call: read_file with arguments {}",
+    ),
+    "t10c: the call note rides the payload inside its assistant message",
+  );
+  assert(
+    shaped.some(
+      (m) =>
+        m.role === "user" && m.content[0].text === `${TOOL_OUTPUT_PREFIX} read_file\nfile body`,
+    ),
+    "t10c: the output line rides the payload after its note",
+  );
+  assert(
+    !shaped.some((m) => m.role === "toolResult"),
+    "t10c: the empty toolResult still drops downstream",
+  );
+  assert(
+    shaped.at(-1).role === "user" && shaped.at(-1).content[0].text === ADVISOR_NUDGE,
+    "t10c: the nudge stays terminal after the evidence rides",
+  );
+  const noteIdx = shaped.findIndex(
+    (m) => m.role === "assistant" && String(m.content[0].text).startsWith("Tool call:"),
+  );
+  const outIdx = shaped.findIndex((m) => String(m.content[0].text).startsWith(TOOL_OUTPUT_PREFIX));
+  assert(
+    noteIdx !== -1 && outIdx === noteIdx + 1,
+    "t10c: the output line sits immediately after its call note",
+  );
 }
 
 // --- 11. the child-session veto. The first case is the regression test for the bug where
