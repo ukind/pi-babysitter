@@ -24,7 +24,7 @@ import type { Message } from "@earendil-works/pi-ai";
 export interface MemoryEntry {
   /** Date.now() at the fire that recorded the entry, injected by the seam. */
   timestamp: number;
-  /** The advisor's reply text, trimmed by recordAdvice. */
+  /** The advisor's reply text, trimmed and byte-capped by recordAdvice. */
   text: string;
 }
 
@@ -57,6 +57,15 @@ export function resetMemoryWarnOnceForTest(): void {
 
 /** Slug cap for a store filename, leaving headroom under Windows path limits. */
 const KEY_SLUG_MAX = 80;
+
+/**
+ * The per-entry advice cap in utf8 bytes (F037). The digest re-enters the advisor
+ * payload after the fold and is never a fold candidate, so an unbounded entry
+ * bypasses the token budget exactly when memory is on. Silent, like KEY_SLUG_MAX:
+ * the shared memoryWarned latch stays reserved for I/O failures, and a capped
+ * entry is still recorded (bounded, not lost).
+ */
+const ADVICE_TEXT_MAX_BYTES = 2048;
 
 /**
  * FNV-1a over the raw cwd, as a fixed-width hex suffix.
@@ -169,8 +178,18 @@ function readEntriesQuiet(key: string): MemoryEntry[] {
 export function recordAdvice(key: string, text: string, cap: number, timestamp: number): void {
   const trimmed = text.trim();
   if (!trimmed || !Number.isFinite(cap) || cap <= 0) return;
+  // F037: the silent per-entry byte cap at record time — the store only ever
+  // holds bounded entries, so the post-fold digest stays inside the budget the
+  // fold cannot see past. The walk-back never splits a code point.
+  let bounded = trimmed;
+  if (Buffer.byteLength(trimmed, "utf8") > ADVICE_TEXT_MAX_BYTES) {
+    const bytes = Buffer.from(trimmed, "utf8");
+    let end = ADVICE_TEXT_MAX_BYTES;
+    while (end > 0 && ((bytes[end] ?? 0) & 0xc0) === 0x80) end -= 1;
+    bounded = bytes.subarray(0, end).toString("utf8");
+  }
   try {
-    const entries = capEntries([...readEntriesQuiet(key), { timestamp, text: trimmed }], cap);
+    const entries = capEntries([...readEntriesQuiet(key), { timestamp, text: bounded }], cap);
     mkdirSync(MEMORY_DIR_URL, { recursive: true });
     writeFileSync(storeUrl(key), `${JSON.stringify(entries, null, 2)}\n`);
   } catch (err) {

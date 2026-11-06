@@ -62,6 +62,29 @@ import { assert, captureWarn, shapeJson, tmpRoot, withConfig } from "../helpers.
     recordAdvice("proj", "   ", 2, 4);
     assert(readEntries("proj").length === 2, "t23: blank advice is skipped");
 
+    // F037: the per-entry byte cap, record time. An over-cap text is still
+    // recorded — bounded, not lost — and the store never holds more than the
+    // cap's bytes for one entry, so the post-fold digest stays bounded.
+    recordAdvice("proj", "x".repeat(3000), 5, 5);
+    const byteCapped = readEntries("proj");
+    assert(byteCapped.length === 3, "t23: an over-cap entry is recorded, bounded");
+    assert(
+      byteCapped[2].text === "x".repeat(2048),
+      "t23: the over-cap text lands at exactly 2048 bytes",
+    );
+    // The truncation never splits a code point: 2048 bytes lands mid-way through
+    // the 683rd euro sign (3 bytes each), and the walk-back keeps 682 whole ones.
+    recordAdvice("proj", "\u20ac".repeat(1000), 5, 6);
+    const euroCapped = readEntries("proj");
+    assert(
+      euroCapped[3].text === "\u20ac".repeat(682),
+      "t23: the walk-back keeps whole code points (682 x 3 bytes = 2046)",
+    );
+    assert(
+      !euroCapped[3].text.includes("\ufffd"),
+      "t23: no replacement character rides a truncated entry",
+    );
+
     // An unknown key reads as the empty store, silently.
     const silent = captureWarn(() => readEntries("unknown"));
     assert(readEntries("unknown").length === 0, "t23: an unknown key reads as empty");
