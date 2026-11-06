@@ -26,9 +26,13 @@ applyTo:
 - `config.ts` — every tunable field, clamping, and the model-key parser.
 - `guard.ts` — child-session inertness (marker veto).
 - `prompt.ts` — context shaping for the advisor call.
-- `advisor.ts` — the model call, deadline, and markup stripping.
+- `advisor.ts` — the model call, deadline, tool loop, and markup stripping.
 - `report.ts` — failure reporting to the TUI.
+- `memory.ts` — the per-project advice store and digest builder. Never throws.
+- `sandbox.ts` — the advisor's read_file-only tool sandbox. Never throws.
+- `triggers.ts` — pure multi-signal fire triggers. No runtime imports.
 - `tests/test.mjs` — offline unit tests.
+- `eval/runner.mjs` — offline eval harness, the sanctioned second runner.
 - `scripts/hooks/gate.mjs` — PreToolUse gate hook. Blocks catastrophic Bash commands.
 - `scripts/hooks/lib.mjs` — shared hook plumbing: invocation detection, stdin parse, field read.
 - `scripts/hooks/feedback.mjs` — PostToolUse hook. Runs `node --check` on edited JS and TS files.

@@ -6,18 +6,25 @@ Status: further tech-debt commits are expected after `236cc25`. Treat the code a
 
 # Architecture
 
-Single package, hub-and-spoke. `index.ts` is the only file the runtime loads; every other module is a spoke with one role. Strict star topology: the hub imports every spoke extensionless (`./advisor`); no spoke imports a sibling at runtime. Pure spokes import nothing at all, so plain node can load them offline.
+Single package, hub-and-spoke. `index.ts` is the only file the runtime loads; every other module is a spoke with one role. The hub registers two handlers: `turn_end` (the blocking commit, or in async mode a detached call held for settle) and `agent_before_settle` (the once-only async commit, with no continuation request). Strict star topology: the hub imports every spoke extensionless (`./advisor`); no spoke imports a sibling at runtime. Pure spokes import nothing at all, so plain node can load them offline.
 
 ```
-[pi host] ──loads─> index.ts  (factory closure: turn_end hook, cadence latch, THE single await)
+[pi host] ──loads─> index.ts  (two handlers: turn_end commit, agent_before_settle async
+                    │           commit; cadence latch, fire counter, two async slots;
+                    │           one blocking await — async mode detaches instead)
                     ├─ config.ts     # config.json read/clamp/parse per dispatch (only node:fs import)
-                    ├─ plan-turn.ts  # PURE cores planGate/planCommit; thunk-injected (zero runtime imports)
-                    ├─ prompt.ts     # context shaper: filter roles, strip tool deltas, ensure user tail (zero imports)
-                    ├─ advisor.ts    # model adapter: duck-typed completeSimple, deadline, markup strip
+                    ├─ plan-turn.ts  # PURE cores planGate/planCommit/planSettle/planHostSupport/stampDetails; thunk-injected (zero runtime imports)
+                    ├─ prompt.ts     # context shaper: inline tool evidence, filter roles, strip tool deltas, fold to budget, ensure user tail (zero imports)
+                    ├─ advisor.ts    # model adapter: duck-typed completeSimple, shared deadline, tool loop + consult leg, markup strip
                     ├─ guard.ts      # child-session veto: marker regex over system msgs (zero imports)
-                    └─ report.ts     # hasUI-gated ui.notify failure reporting (zero imports)
+                    ├─ report.ts     # hasUI-gated ui.notify failure reporting (zero imports)
+                    ├─ memory.ts     # per-project advice store + digest builder (node:fs, never throws)
+                    ├─ sandbox.ts    # read_file-only tool sandbox: pure planRead bound + I/O closure (node:fs)
+                    └─ triggers.ts   # PURE multi-signal fire triggers (zero imports)
 scripts/hooks/      # separate defense layer, registered via .claude/settings.json
                     # see .rpiv/guidance/scripts/hooks/architecture.md
+eval/               # the sanctioned second runner: golden fixtures replayed through the
+                    # real pipeline; CI gates on the score table (npm run eval)
 ```
 
 Host packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`) are `import type` only. Runtime host access is duck-typed through structural `-Like` interfaces and a bound `runtime.completeSimple` slot.
@@ -30,8 +37,9 @@ Host packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`) are `
 | Lint + format check | `npm run lint` | `npx biome check <paths>` |
 | Format (rewrite) | `npm run format` | `npx biome format --write <paths>` |
 | Typecheck | `npm run typecheck` | `npx tsc --noEmit` (project-only; `.mjs` not covered) |
+| Eval | `npm run eval` | `node --experimental-strip-types eval/runner.mjs` |
 
-CI runs test, lint, and typecheck on every push.
+CI runs test, lint, typecheck, and eval on every push.
 
 # Business Context
 
