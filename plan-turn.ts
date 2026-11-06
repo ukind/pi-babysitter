@@ -223,7 +223,7 @@ export type HostSupport = { supported: true } | { supported: false; message: str
  * Feature-detect the 1.4 boundary surface from the first turn_end event.
  *
  * The 0.79.x host dispatches turn_end as a bare emit with no outcome and no
- * context (agent-session.js:375-384); under it planGate would skip every fire
+ * context (agent-session.js:388-394); under it planGate would skip every fire
  * silently. The version number itself is not on the extension context, and a
  * hardcoded package read would be a second fragile reach like F008, so the
  * detect reads the event fields the gate actually needs.
@@ -292,7 +292,7 @@ export interface PlanSettleArgs {
  * formats the blocking path pins. The commit arm spreads the SETTLE event's own
  * accumulator and deliberately omits the continue key: a truthy result.continue
  * at agent_before_settle makes the host ensure one next provider request
- * (agent-session.js:1578-1584), which would wake an idle agent — FR8 forbids
+ * (agent-session.js:1596-1602), which would wake an idle agent — FR8 forbids
  * that. The draft is byte-identical to the blocking draft (shared builder); only
  * the continue key differs.
  */

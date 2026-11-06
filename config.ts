@@ -168,7 +168,7 @@ export function parseModelKey(key: string): { provider: string; modelId: string 
  * The stateful threshold form: fire on the first COMPLETED turn at or past each
  * boundary. lastFiredTurn starts at -1, so the first fire lands at turn interval - 1
  * (0-based) — the same boundary sequence the deleted modulo form produced (F025:
- * `turnIndex` is 0-based for the just-finished turn, agent-session.js:918 increments
+ * `turnIndex` is 0-based for the just-finished turn, agent-session.js:931 increments
  * it after the dispatch). An errored boundary does not spend its slot because the
  * seam updates lastFiredTurn only after the completed check passes, so the next
  * completed turn at or past the boundary fires — which a modulo form would not do

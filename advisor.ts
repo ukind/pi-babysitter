@@ -158,8 +158,8 @@ export function resolveAdvisorModel(
  * Resolve Pi's auth-aware completion facade when the host exposes one.
  *
  * `ModelRegistry` keeps `runtime` as a public class field
- * (install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/core/model-registry.js:5-9),
- * so this reach is stable on 1.4.0. Calling that facade is what lets Pi apply
+ * (install/releases/1.5.0/node_modules/@earendil-works/pi-coding-agent/dist/core/model-registry.js:6-9),
+ * so this reach is stable on 1.5.0. Calling that facade is what lets Pi apply
  * credential-derived request fields such as GitHub Copilot's OAuth-specific `baseUrl`.
  * Older hosts, and future hosts that move the slot, simply fall through.
  *
@@ -168,9 +168,16 @@ export function resolveAdvisorModel(
  * undefined, runAdvisor's fail-fast guard returns "no auth-aware completion facade
  * on this host", and the commit seam notifies through reportFailure (plan-turn.ts's
  * failure arm -> index.ts's notify -> report.ts:30-37) on every gate pass whose turn
- * completed — the cadence latch spends on the outcome check (index.ts:60-61), so the
- * failure re-reports each interval until the facade returns. The per-fire report is
- * the accepted contract; the caret stays.
+ * completed — the cadence latch spends at gate-pass (planGate's markFired, after the
+ * outcome check and before the vetoes), so the failure re-reports each interval until
+ * the facade returns. The per-fire report is the accepted contract; the caret stays.
+ *
+ * RE-RECORDED 2026-11-06 at 1.5.0 (F020): `npm audit fix` resolved the host to 1.5.0
+ * within the caret, and the reach was re-verified against the real 1.5.0 dist before
+ * this commit merged — `runtime` is still a public class field (model-registry.js:6-9)
+ * and `completeSimple` still rides `ModelRuntime` (model-runtime.js:524). The contract
+ * holds unchanged across the bump; the version-prefixed anchors below were re-recorded
+ * in the same commit.
  *
  * The returned method is bound because `ModelRuntime.completeSimple()` calls other
  * runtime methods through `this`.
@@ -422,9 +429,9 @@ async function runConsultLeg(
  *
  * THE `catch` IS A BACKSTOP, NOT THE MAIN PATH. `completeSimple` resolves through
  * `lazyStream`, whose `setup().catch`
- * (install/releases/1.4.0/node_modules/@earendil-works/pi-ai/dist/api/lazy.js:57-64)
+ * (install/releases/1.5.0/node_modules/@earendil-works/pi-ai/dist/api/lazy.js:55-62)
  * pushes an `error` event and calls `outer.end(message)`, and `EventStream.end`
- * (install/releases/1.4.0/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js:52-58)
+ * (install/releases/1.5.0/node_modules/@earendil-works/pi-ai/dist/utils/event-stream.js:51-54)
  * RESOLVES the final-result promise. A missing credential, a provider 500, and a
  * network failure therefore all RESOLVE with an `AssistantMessage` whose
  * `stopReason` is `"error"` and whose `errorMessage` carries the cause. Reading only
@@ -437,7 +444,7 @@ async function runConsultLeg(
  * resolution and reintroduces the endpoint mismatch.
  *
  * THE GATE ADMITS EXACTLY ONE STOP REASON. `StopReason` is a closed 7-member
- * union (`pi-ai types.d.ts:307`): "pending" | "stop" | "length" | "toolUse" |
+ * union (`pi-ai types.d.ts:314`): "pending" | "stop" | "length" | "toolUse" |
  * "error" | "aborted" | "deferred". Only "stop" means the provider finished the
  * reply. Every other member is either a failure ("error", "aborted") or an
  * unfinished reply ("length" is a cap hit, "toolUse" means it stopped to call a

@@ -15,7 +15,7 @@
  *     statically.
  *   - IDENTITY. `loadExtensionModule` builds a fresh jiti per extension with
  *     `moduleCache: false`
- *     (install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js:480-483).
+ *     (install/releases/1.5.0/node_modules/@earendil-works/pi-coding-agent/dist/core/extensions/loader.js:481-483).
  *     The pi-subagents package declares `./src/index.ts` as its entry
  *     (npm/node_modules/@tintinweb/pi-subagents/package.json:62-64), so the runtime
  *     loads `src/child-context.ts` inside ITS jiti. This extension's jiti imports the
@@ -81,22 +81,22 @@ function contentText(content: unknown): string {
  * Render a system message the way pi does: `content` plus every `sections` value.
  *
  * The shape follows `getSystemMessageText`
- * (install/releases/1.4.0/node_modules/@earendil-works/pi-ai/dist/utils/text.js:11-18),
+ * (install/releases/1.5.0/node_modules/@earendil-works/pi-ai/dist/utils/text.js:11-18),
  * copied rather than imported so this module keeps zero imports — a value import would
  * break Phase 6's plain-node test, which resolves no package.
  *
  * READING `content` ALONE IS A BUG. `buildSystemPromptState`
- * (install/releases/1.4.0/node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js:126-130)
+ * (install/releases/1.5.0/node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js:125-129)
  * returns `{ content: "", sections }` unless a `before_agent_start` handler forced a
  * prompt. pi-subagents passes the child prompt as `customPrompt`
- * (src/agent-runner.ts:856 → resource-loader.js:477 → agent-session.js:1305), which
+ * (src/agent-runner.ts:856 → resource-loader.js:492 → agent-session.js:1323), which
  * `buildSystemPromptSections` puts in `sections.preamble`
  * (system-prompt.js:78-79). In a real child session the marker is therefore in
  * `sections.preamble` and `content` is the empty string.
  *
  * One deliberate difference from pi's reader: text blocks are concatenated without a
  * separator, where pi joins them with a newline. Every pi-generated system message
- * carries a string `content` (agent-session.js:1328 emits `content: ""`), so the array
+ * carries a string `content` (agent-session.js:1346 emits `content: ""`), so the array
  * branch is unreachable for `llmMessages` and the difference cannot change a verdict.
  */
 function systemMessageText(message: SystemMessageLike): string {

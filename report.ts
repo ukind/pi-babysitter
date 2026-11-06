@@ -8,7 +8,7 @@
  * failure.
  *
  * `ctx.hasUI` is a boolean getter on the extension context (runner.js:626-629 calls the
- * Runner's `hasUI()` method; extensions/types.d.ts:219 and :547 declare it `boolean`),
+ * Runner's `hasUI()` method; extensions/types.d.ts:238 and :566 declare it `boolean`),
  * so this module takes a plain boolean rather than a function.
  *
  * This module imports nothing, so the offline test resolves no package at all.
