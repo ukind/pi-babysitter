@@ -164,7 +164,7 @@ function readEntriesQuiet(key: string): MemoryEntry[] {
  * advice is skipped rather than stored. The pre-read is silent, so a corrupt
  * store is overwritten whole and self-heals without a warning; a failed WRITE
  * warns once, and the entries already on disk stay untouched because the new
- * file is written atomically-whole (one writeFileSync per fire).
+ * file is a self-healing whole-file rewrite (one writeFileSync per fire).
  */
 export function recordAdvice(key: string, text: string, cap: number, timestamp: number): void {
   const trimmed = text.trim();
