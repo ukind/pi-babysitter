@@ -31,7 +31,7 @@ import { resolve, sep } from "node:path";
  */
 
 /** The only tool name this sandbox executes. Everything else is refused. */
-export const READ_FILE_TOOL_NAME = "read_file";
+const READ_FILE_TOOL_NAME = "read_file";
 
 /**
  * Hard byte cap on one sandboxed read. A module constant, not a config field:
@@ -52,7 +52,7 @@ export const SANDBOX_MAX_BYTES = 65536;
 const SECRET_SEGMENT = /(^|\/)(\.env[^/]*|\.npmrc|\.git|id_rsa[^/]*|[^/]*\.pem)$/i;
 
 /** One sandbox execution: the text to feed the advisor, or why it refused. */
-export type SandboxResult = { ok: true; text: string } | { ok: false; reason: string };
+type SandboxResult = { ok: true; text: string } | { ok: false; reason: string };
 
 /** The seam-facing executor shape; advisor.ts calls this once per ToolCall block. */
 export type AdvisorSandbox = (name: string, args: unknown) => SandboxResult;

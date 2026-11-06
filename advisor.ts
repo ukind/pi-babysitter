@@ -38,7 +38,7 @@ export interface AdvisorTool {
 }
 
 /** One tool execution: the text to replay, or why it refused. */
-export type ToolExecutionResult = { ok: true; text: string } | { ok: false; reason: string };
+type ToolExecutionResult = { ok: true; text: string } | { ok: false; reason: string };
 
 /** The seam-facing executor the loop calls once per ToolCall block. */
 export type ToolExecutor = (name: string, args: unknown) => ToolExecutionResult;

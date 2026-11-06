@@ -67,7 +67,7 @@ export function captureWarn(fn) {
 export const shapeJson = (messages) =>
   JSON.stringify(messages.map(({ timestamp: _ts, ...rest }) => rest));
 
-export const Q = String.fromCharCode(34);
+const Q = String.fromCharCode(34);
 export const marker = (name) => `<active_agent name=${Q}${name}${Q}/>`;
 
 export const gateArgs = (overrides = {}) => ({

@@ -12,7 +12,7 @@
  */
 
 /** One fire-worthy signal, named for pins and eval scoring. */
-export type TriggerSignal = "error" | "tokens" | "pressure" | "risky-tool";
+type TriggerSignal = "error" | "tokens" | "pressure" | "risky-tool";
 
 /** What planTrigger tells planGate to do. */
 export type TriggerDecision =
