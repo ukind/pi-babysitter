@@ -29,7 +29,8 @@ as a `custom_message` entry in the durable transcript.
 - `memory.ts` — the per-project advice store and digest builder. Never throws.
 - `sandbox.ts` — the advisor's read_file-only tool sandbox. Never throws.
 - `triggers.ts` — pure multi-signal fire triggers. No runtime imports.
-- `tests/test.mjs` — offline unit tests. Run with `npm test`.
+- `tests/suites/` — eight offline unit suites, one per module concern. Run with `npm test`.
+- `tests/helpers.mjs` — shared suite helpers: assert, fixtures, and the exit handler.
 - `eval/runner.mjs` — offline eval harness, the sanctioned second runner. Run with `npm run eval`.
 - `scripts/hooks/gate.mjs` — PreToolUse gate hook. Blocks catastrophic Bash commands.
 - `scripts/hooks/lib.mjs` — shared hook plumbing: invocation detection, stdin parse, field read.

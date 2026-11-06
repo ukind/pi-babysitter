@@ -31,7 +31,8 @@ applyTo:
 - `memory.ts` — the per-project advice store and digest builder. Never throws.
 - `sandbox.ts` — the advisor's read_file-only tool sandbox. Never throws.
 - `triggers.ts` — pure multi-signal fire triggers. No runtime imports.
-- `tests/test.mjs` — offline unit tests.
+- `tests/suites/` — the eight offline unit suites.
+- `tests/helpers.mjs` — shared suite helpers.
 - `eval/runner.mjs` — offline eval harness, the sanctioned second runner.
 - `scripts/hooks/gate.mjs` — PreToolUse gate hook. Blocks catastrophic Bash commands.
 - `scripts/hooks/lib.mjs` — shared hook plumbing: invocation detection, stdin parse, field read.

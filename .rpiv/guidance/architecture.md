@@ -33,7 +33,7 @@ Host packages (`@earendil-works/pi-coding-agent`, `@earendil-works/pi-ai`) are `
 
 | Task | Repo-wide | Path-scoped |
 |---|---|---|
-| Test | `npm test` | `node --experimental-strip-types tests/test.mjs` (one suite, no filter) |
+| Test | `npm test` | `node --experimental-strip-types tests/test.mjs` (the runner over eight suites) |
 | Lint + format check | `npm run lint` | `npx biome check <paths>` |
 | Format (rewrite) | `npm run format` | `npx biome format --write <paths>` |
 | Typecheck | `npm run typecheck` | `npx tsc --noEmit` (project-only; `.mjs` not covered) |
@@ -70,7 +70,7 @@ The gate ships disabled: an empty `model` skips the advisor call entirely. `conf
 </important>
 
 <important if="you are writing or modifying tests">
-- Single file `tests/test.mjs`, plain `node:assert`, no framework, runs under `--experimental-strip-types`.
+- Eight suites in `tests/suites/` plus shared `tests/helpers.mjs`, plain `node:assert`, no framework, running under `--experimental-strip-types` through the `tests/test.mjs` bare-import runner.
 - No live model calls — stub the completion facade. Import pure cores directly (no process spawn, no jiti).
 - Pin exact strings: failure reasons, rule reasons, and warn-once messages are contract.
 </important>

@@ -2,7 +2,9 @@
  * eval/runner.mjs — the offline eval harness (FR9), the sanctioned second runner.
  *
  * TECH_DEBT_AUDIT.md sets the split rule ("~1,500 lines or when a second runner
- * appears"); this directory is that second runner. Each fixture under eval/fixtures/
+ * appears"); this directory is that second runner. The unit suite runs beside it:
+ * eight suites under tests/suites/ through the tests/test.mjs bare-import runner.
+ * Each fixture under eval/fixtures/
  * seeds one pillar's scenario as pure JSON: a projected llmMessages context, the gate
  * config, per-turn trigger signals, a scripted completion facade, and optional sandbox
  * or memory state. The runner replays the REAL pipeline — planGate, buildAdvisorMessages,
