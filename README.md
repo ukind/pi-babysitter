@@ -41,6 +41,11 @@ clamped into range, with a one-time warning.
 | `specialistSystemPrompt` | code default          | Optional system prompt for the specialist. The code default is the single source.                                                                               |
 | `asyncMode`              | `false` (blocking)    | Commit the advisor's reply at the next agent settlement instead of blocking turn_end. The advisor never wakes an idle agent.                                    |
 
+When `toolsEnabled` is on, the sandbox refuses secret files by name: `.env*`,
+`.npmrc`, `.git`, `id_rsa*`, and `*.pem`. The denylist checks the requested path
+before any read and the resolved real path after, so a symlink that points at a
+secret is refused too.
+
 ## Verify
 
 ```

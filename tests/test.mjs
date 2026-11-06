@@ -2257,6 +2257,30 @@ for (const [name, response, check] of runCases) {
   assert(planRead(root, "").action === "refuse", "t25: an empty path is refused");
   assert(planRead(root, undefined).action === "refuse", "t25: a missing path is refused");
   assert(planRead(root, 42).action === "refuse", "t25: a non-string path is refused");
+  // F031: the secret denylist. Site 1 runs on the requested path before any
+  // resolution, so these refuse even though planRead does no fs.
+  assert(
+    planRead(root, "src/.env.example").action === "refuse" &&
+      planRead(root, "src/.env.example").reason.includes("a secret file"),
+    "t25: an example env file refuses too — the denylist is strict",
+  );
+  assert(
+    planRead(root, join("src", ".env")).action === "refuse",
+    "t25: a nested env path refuses (the join() spelling holds on win32)",
+  );
+  assert(
+    planRead(root, join(root, ".npmrc")).action === "refuse",
+    "t25: an absolute secret path refuses",
+  );
+  assert(
+    planRead(root, join("keys", "server.pem")).action === "refuse",
+    "t25: a key file refuses by its .pem extension",
+  );
+  assert(planRead(root, ".ENV").action === "refuse", "t25: the denylist is case-insensitive");
+  assert(
+    planRead(root, join("..", ".env")).reason.includes("a secret file"),
+    "t25: the denylist outranks the escape check",
+  );
 }
 
 {
@@ -2283,6 +2307,25 @@ for (const [name, response, check] of runCases) {
   assert(!missing.ok && missing.reason.includes("no such file"), "t25: a missing file refuses");
   const dirRead = sandbox("read_file", { path: "." });
   assert(!dirRead.ok && dirRead.reason.includes("not a file"), "t25: a directory read refuses");
+  // F031 site 1 through the live sandbox: a secret-named path refuses before
+  // any fs work — no fixture file needed — while a non-secret neighbor still
+  // reads end-to-end through realpath, read, and return.
+  const envRead = sandbox("read_file", { path: ".env" });
+  assert(
+    !envRead.ok && envRead.reason.includes("a secret file"),
+    "t25: a .env read refuses through the live sandbox",
+  );
+  const envExampleRead = sandbox("read_file", { path: join("src", ".env.example") });
+  assert(
+    !envExampleRead.ok && envExampleRead.reason.includes("a secret file"),
+    "t25: a nested example env read refuses through the live sandbox",
+  );
+  writeFileSync(join(root, "README.md"), "# not a secret");
+  const readmeRead = sandbox("read_file", { path: "README.md" });
+  assert(
+    readmeRead.ok && readmeRead.text === "# not a secret",
+    "t25: a non-secret file still reads end-to-end",
+  );
   const capped = createSandbox(root, 4);
   const overCap = capped("read_file", { path: "note.txt" });
   assert(
@@ -2328,6 +2371,24 @@ for (const [name, response, check] of runCases) {
   assert(
     !denied.ok && denied.reason.includes("disk gone"),
     "t25: a read error surfaces through the injected fs with its message",
+  );
+  // F031 site 2: the realpath side re-checks the denylist. The stub resolves an
+  // innocent request to a secret INSIDE the root, so the prefix re-check passes
+  // and only the denylist can refuse — this pin proves the second site fires.
+  const secretFs = {
+    readFileSync: () => Buffer.from("leaked"),
+    realpathSync: () => join(root, ".npmrc"),
+  };
+  const secretReal = createSandbox(
+    root,
+    SANDBOX_MAX_BYTES,
+    secretFs,
+  )("read_file", {
+    path: "note.txt",
+  });
+  assert(
+    !secretReal.ok && secretReal.reason.includes("a secret file"),
+    "t25: a realpath landing on a secret refuses (stub fs)",
   );
 }
 
@@ -2612,6 +2673,12 @@ for (const [name, response, check] of runCases) {
   assert(
     pathRefusal.length > 0 && stripAdvisorMarkup(pathRefusal) === pathRefusal,
     "t25: the outside-project refusal survives the strip byte-identical",
+  );
+  const secretProbe = planRead(join(tmpRoot), ".env");
+  const secretRefusal = secretProbe.action === "refuse" ? secretProbe.reason : "";
+  assert(
+    secretRefusal.includes("a secret file") && stripAdvisorMarkup(secretRefusal) === secretRefusal,
+    "t25: the secret-file refusal survives the strip byte-identical",
   );
 }
 

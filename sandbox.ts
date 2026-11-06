@@ -42,6 +42,15 @@ export const READ_FILE_TOOL_NAME = "read_file";
  */
 export const SANDBOX_MAX_BYTES = 65536;
 
+/**
+ * The secret denylist (F031): final path segments whose reads must never
+ * return content. Strict by decision — an example env file can carry real
+ * values, so the example spelling refuses too. The check runs at two sites: the
+ * requested path in planRead (before any fs work) and the realpath in
+ * createSandbox (an innocent link name can resolve to a secret target).
+ */
+const SECRET_SEGMENT = /(^|\/)(\.env[^/]*|\.npmrc|\.git|id_rsa[^/]*|[^/]*\.pem)$/i;
+
 /** One sandbox execution: the text to feed the advisor, or why it refused. */
 export type SandboxResult = { ok: true; text: string } | { ok: false; reason: string };
 
@@ -76,6 +85,15 @@ export function planRead(root: string, requested: unknown): ReadDecision {
     return {
       action: "refuse",
       reason: 'advisor sandbox refused the read: "path" must be a non-empty string',
+    };
+  }
+  // F031 site 1: a secret-named path refuses before any resolution or fs work,
+  // even when the same path would also escape — the denylist outranks the
+  // prefix check.
+  if (SECRET_SEGMENT.test(requested.replace(/\\/g, "/"))) {
+    return {
+      action: "refuse",
+      reason: `advisor sandbox refused "${requested}": a secret file`,
     };
   }
   const normalizedRoot = resolve(root);
@@ -162,6 +180,15 @@ export function createSandbox(
       // A missing file throws ENOENT here, which the catch reports as the
       // ordinary no-such-file outcome.
       const real = fs.realpathSync(plan.absolute);
+      // F031 site 2: the realpath side re-checks the denylist. The link name can
+      // be innocent; this check runs before the prefix re-check so the refusal
+      // names the stronger violation when both would fire.
+      if (SECRET_SEGMENT.test(real.replace(/\\/g, "/"))) {
+        return {
+          ok: false,
+          reason: `advisor sandbox refused "${requested}": a secret file`,
+        };
+      }
       const normalizedRoot = resolve(root);
       const rootWithSep = normalizedRoot.endsWith(sep) ? normalizedRoot : normalizedRoot + sep;
       if (real !== normalizedRoot && !real.startsWith(rootWithSep)) {
