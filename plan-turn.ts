@@ -1,3 +1,23 @@
+/**
+ * plan-turn.ts — the pure decision cores the seam runs per turn.
+ *
+ * planGate decides whether the just-finished turn owes the advisor a call;
+ * planCommit turns the outcome into a report or the committed correction;
+ * planSettle decides the once-only settle commit for an async fire;
+ * planHostSupport feature-detects the boundary surface; stampDetails builds
+ * the fire/turn keys every committed entry carries. Every core is pure: it
+ * reads only plain data and injected thunks, does no I/O, and imports no
+ * sibling at runtime.
+ *
+ * The pi-ai and pi-coding-agent imports are TYPE-only, so they are erased
+ * before the module runs. The `./advisor` and `./triggers` imports are
+ * type-only sibling imports, permitted by the guidance's rule because they
+ * are erased under strip-types — the plain-node load is proven by the suite
+ * importing this module directly. Type duplication would be worse.
+ *
+ * This module imports no runtime sibling, so the offline test resolves no
+ * package beyond the type-only host imports.
+ */
 import type { Api, Message, Model } from "@earendil-works/pi-ai";
 import type { BoundaryResult } from "@earendil-works/pi-coding-agent";
 import type { AdvisorOutcome, AdvisorResolution } from "./advisor";

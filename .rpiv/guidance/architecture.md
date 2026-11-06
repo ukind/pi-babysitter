@@ -6,7 +6,7 @@ Status: further tech-debt commits are expected after `236cc25`. Treat the code a
 
 # Architecture
 
-Single package, hub-and-spoke. `index.ts` is the only file the runtime loads; every other module is a spoke with one role. The hub registers two handlers: `turn_end` (the blocking commit, or in async mode a detached call held for settle) and `agent_before_settle` (the once-only async commit, with no continuation request). Strict star topology: the hub imports every spoke extensionless (`./advisor`); no spoke imports a sibling at runtime. Pure spokes import nothing at all, so plain node can load them offline.
+Single package, hub-and-spoke. `index.ts` is the only file the runtime loads; every other module is a spoke with one role. The hub registers two handlers: `turn_end` (the blocking commit, or in async mode a detached call held for settle) and `agent_before_settle` (the once-only async commit, with no continuation request). Strict star topology: the hub imports every spoke extensionless (`./advisor`); no spoke imports a sibling at runtime (type-only imports are erased). Pure spokes import nothing at all, so plain node can load them offline.
 
 ```
 [pi host] ──loads─> index.ts  (two handlers: turn_end commit, agent_before_settle async
@@ -64,7 +64,7 @@ The gate ships disabled: an empty `model` skips the advisor call entirely. `conf
 </important>
 
 <important if="you are adding a new root module">
-- Pure/decision modules: ZERO runtime imports — `import type` for pi types, no sibling imports; accept capabilities as injected thunks.
+- Pure/decision modules: ZERO runtime imports — `import type` for pi types, no RUNTIME sibling imports; type-only sibling imports are permitted (erased under strip-types); accept capabilities as injected thunks.
 - Runtime modules import siblings extensionless (`./advisor` — the jiti-proven form).
 - Name pure decision functions with the `plan*` verb and return `*Decision` discriminated unions on `action`.
 </important>
