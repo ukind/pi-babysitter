@@ -39,11 +39,14 @@ const ROOT_LIKE_TARGETS = new Set([
   ".",
   "..",
   "../..",
+  "../",
+  "../*",
+  "~/..",
 ]);
 
 function isRootLikeTarget(token) {
   const target = token.replace(/^["']|["']$/g, "");
-  return ROOT_LIKE_TARGETS.has(target) || /^[a-zA-Z]:\\?$/.test(target);
+  return ROOT_LIKE_TARGETS.has(target) || /^[a-zA-Z]:[\\/]?$/.test(target);
 }
 
 function isFlag(token) {

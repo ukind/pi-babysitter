@@ -1402,6 +1402,10 @@ for (const [name, response, check] of runCases) {
     ["mkfs.ext4 /dev/sda1", "mkfs"],
     ["dd if=zero of=/dev/sda", "dd"],
     ["chmod -R 777 /", "chmod"],
+    ["rm -rf C:/", "drive root forward slash"],
+    ["rm -rf ../", "parent escape"],
+    ["rm -rf ../*", "parent glob"],
+    ["rm -rf ~/..", "home parent"],
   ];
   for (const [command] of blocked) {
     assert(evaluate(command) !== null, `t19: blocked: ${command}`);
@@ -1421,6 +1425,7 @@ for (const [name, response, check] of runCases) {
     "DROP a hint",
     "npm test",
     "ls -la",
+    "rm -rf build",
   ];
   for (const command of allowed) {
     assert(evaluate(command) === null, `t19: allowed: ${command}`);
