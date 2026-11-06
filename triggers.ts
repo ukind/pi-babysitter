@@ -102,3 +102,17 @@ export function planTrigger(
   }
   return { action: "none", reason: "no signal" };
 }
+
+/**
+ * The starved-trigger message (F036): an armed threshold whose host data is
+ * null can never fire, so the seam warns once per signal. The bindings are
+ * fixed pairs — the config field that armed the threshold, and the signal it
+ * starves. Pure: no I/O, no latch, no console — the seam owns those,
+ * mirroring the hostChecked precedent (index.ts).
+ */
+export function starvedTriggerWarn(
+  field: "triggerMinNewTokens" | "triggerContextPercent",
+  signal: "tokens" | "pressure",
+): string {
+  return `[advisor-turn-gate] trigger ${field} is armed but this host provides no ${signal} data`;
+}

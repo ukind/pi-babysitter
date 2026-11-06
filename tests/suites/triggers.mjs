@@ -1,10 +1,10 @@
 // tests/suites/triggers.mjs — F030 suite: banners 21 and 21c of the former
-// monolith — trigger arms, planGate integration, and the trigger fields.
-// (Pre-F036 state: banner 21d and the starvedTriggerWarn import arrive at Phase 9.)
+// monolith, plus the F036 starved-trigger pins (21d) — trigger arms, planGate
+// integration, the trigger fields, and the starvation diagnostic.
 
 import { loadConfig } from "../../config.ts";
 import { planGate, planHostSupport } from "../../plan-turn.ts";
-import { parseRiskyTools, planTrigger, triggersArmed } from "../../triggers.ts";
+import { parseRiskyTools, planTrigger, starvedTriggerWarn, triggersArmed } from "../../triggers.ts";
 import { assert, captureWarn, gateArgs, withConfig } from "../helpers.mjs";
 
 // --- 21. FR3 triggers: planTrigger arm order, planGate integration, host support.
@@ -217,3 +217,34 @@ import { assert, captureWarn, gateArgs, withConfig } from "../helpers.mjs";
     "t21c: armed values survive",
   );
 }
+
+// --- 21d. F036: the starved-trigger diagnostic. The builder's two messages are
+//          exact, and the core's armed-null no-op stays silent BY DESIGN — the
+//          warn lives at the seam (index.ts), where null-ness is decidable, so
+//          this suite pins the messages and the no-op, not the closure latch.
+// (No lone block around the asserts: they declare nothing, and biome rejects
+// a declaration-free lone block (noUselessLoneBlockStatements).
+assert(
+  starvedTriggerWarn("triggerMinNewTokens", "tokens") ===
+    "[advisor-turn-gate] trigger triggerMinNewTokens is armed but this host provides no tokens data",
+  "t21d: the tokens starvation message is exact",
+);
+assert(
+  starvedTriggerWarn("triggerContextPercent", "pressure") ===
+    "[advisor-turn-gate] trigger triggerContextPercent is armed but this host provides no pressure data",
+  "t21d: the pressure starvation message is exact",
+);
+assert(
+  planTrigger(
+    { turnTokens: null, contextPercent: null, outcome: "completed", toolNames: [] },
+    { minNewTokens: 1000, contextPercent: 0, onError: false, riskyTools: [] },
+  ).action === "none",
+  "t21d: an armed tokens threshold stays silent on null tokens (the seam warns)",
+);
+assert(
+  planTrigger(
+    { turnTokens: null, contextPercent: null, outcome: "completed", toolNames: [] },
+    { minNewTokens: 0, contextPercent: 50, onError: false, riskyTools: [] },
+  ).action === "none",
+  "t21d: an armed pressure threshold stays silent on null context (the seam warns)",
+);

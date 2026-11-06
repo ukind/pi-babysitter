@@ -9,7 +9,7 @@ import { planCommit, planGate, planHostSupport, planSettle, stampDetails } from 
 import { buildAdvisorMessages } from "./prompt";
 import { reportFailure } from "./report";
 import { createSandbox, READ_FILE_TOOL, SANDBOX_MAX_BYTES } from "./sandbox";
-import { parseRiskyTools, planTrigger, triggersArmed } from "./triggers";
+import { parseRiskyTools, planTrigger, starvedTriggerWarn, triggersArmed } from "./triggers";
 
 /**
  * index.ts — the advisor gate's wiring.
@@ -55,6 +55,14 @@ export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
   // latch already spent — F007), never a queue and never an overwrite.
   let advisorInFlight = false;
   let heldAdvice: HeldAdvice | undefined;
+
+  // F036: the starved-trigger latches. An armed signal whose host data is null
+  // can never fire, so each starved signal warns once per factory. Two
+  // independent latches, not one: the two extraction sites fail independently,
+  // and a shared latch would let the first starved signal suppress the
+  // second's diagnostic. Reload re-arms both, like every factory latch here.
+  let starvedTokensWarned = false;
+  let starvedPressureWarned = false;
 
   pi.on("turn_end", async (event, ctx): Promise<BoundaryResult | undefined> => {
     // Config is read per dispatch, not once at factory time, so interval and model
@@ -112,20 +120,40 @@ export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
       // Signals read defensively so a partially-shaped event degrades to nulls,
       // never to a throw; the thunk itself runs only on a cadence miss.
       trigger: triggersArmed(thresholds)
-        ? () =>
-            planTrigger(
+        ? () => {
+            // F036: the starved-signal diagnostics. An armed signal whose host
+            // data is null can never fire (the core's silent no-op — pinned at
+            // t21d), so the extraction warns once per signal here, where
+            // null-ness is decidable. console.warn, not reportFailure: a headless
+            // host has no UI, and starvation is a diagnostic, not a failure. The
+            // thunk still runs only on a cadence miss (the t9/t21 laziness pins).
+            // usage.output is what this turn added to the conversation; totalTokens
+            // is request size (input context plus output) and would fire every turn.
+            const turnTokens =
+              (event.message as { usage?: { output?: number } } | undefined)?.usage?.output ?? null;
+            if (thresholds.minNewTokens > 0 && turnTokens === null && !starvedTokensWarned) {
+              starvedTokensWarned = true;
+              console.warn(starvedTriggerWarn("triggerMinNewTokens", "tokens"));
+            }
+            const contextPercent = ctx.getContextUsage?.()?.percent ?? null;
+            if (
+              thresholds.contextPercent > 0 &&
+              contextPercent === null &&
+              !starvedPressureWarned
+            ) {
+              starvedPressureWarned = true;
+              console.warn(starvedTriggerWarn("triggerContextPercent", "pressure"));
+            }
+            return planTrigger(
               {
-                // usage.output is what this turn added to the conversation; totalTokens
-                // is request size (input context plus output) and would fire every turn.
-                turnTokens:
-                  (event.message as { usage?: { output?: number } } | undefined)?.usage?.output ??
-                  null,
-                contextPercent: ctx.getContextUsage?.()?.percent ?? null,
+                turnTokens,
+                contextPercent,
                 outcome: typeof event.outcome === "string" ? event.outcome : "",
                 toolNames: (event.toolResults ?? []).map((result) => result.toolName),
               },
               thresholds,
-            )
+            );
+          }
         : undefined,
       // The single lastFiredTurn write in the codebase. planGate invokes this at
       // gate-pass — after the completed check, before the vetoes — so an errored
