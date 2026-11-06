@@ -9,9 +9,11 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        # Quoted on purpose: YAML types bare scalars (24 -> integer, 22.6 ->
+        # Quoted on purpose: YAML types bare scalars (24 -> integer, 22.19 ->
         # float), and node versions must reach setup-node as strings.
-        node: ["22.6.0", "24"]
+        # 22.19.0 floor: @earendil-works/pi-agent-core@1.5.0 requires >=22.19.0
+        # (F020 follow-up: the 1.5.0 lockfile cannot install on 22.6).
+        node: ["22.19.0", "24"]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

@@ -1,6 +1,6 @@
 # Project Overview
 
-advisor-turn-gate is a pi coding-agent extension. Every N completed turns it sends the transcript's user and assistant turns to an advisor model (`tools: []`) and commits the answer as a `custom_message` entry with a forced continuation. TypeScript strict, zero runtime npm dependencies, Node >= 22.6.
+advisor-turn-gate is a pi coding-agent extension. Every N completed turns it sends the transcript's user and assistant turns to an advisor model (`tools: []`) and commits the answer as a `custom_message` entry with a forced continuation. TypeScript strict, zero runtime npm dependencies, Node >= 22.19.0.
 
 Status: further tech-debt commits are expected after `236cc25`. Treat the code as canonical; re-check details against source.
 
