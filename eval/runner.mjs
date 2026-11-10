@@ -276,7 +276,14 @@ async function replayFixture(fixture) {
       if (parsed) {
         const resolution = resolveAdvisorModel(registry, parsed.provider, parsed.modelId);
         if (resolution.ok) {
-          specialist = { model: resolution.model, systemPrompt: config.specialistSystemPrompt };
+          specialist = {
+            model: resolution.model,
+            systemPrompt: config.specialistSystemPrompt,
+            // Mirror of index.ts:189-192 — the specialist's own level. The blind
+            // DEFAULT_CONFIG spread at :261 forwards the "" sentinel, so fixtures
+            // without the key stay byte-identical.
+            reasoning: config.specialistReasoningEffort,
+          };
         }
       }
     }
@@ -326,6 +333,10 @@ async function replayFixture(fixture) {
           ? createSandbox(env.project, SANDBOX_MAX_BYTES)
           : undefined,
         maxToolRounds: config.maxToolRounds,
+        // Mirror of index.ts:202-219 — the advisor level. The blind DEFAULT_CONFIG
+        // spread at :261 forwards the "" sentinel, so fixtures without the key stay
+        // byte-identical (the facade ignores the third argument anyway).
+        reasoning: config.reasoningEffort,
         specialist,
       });
       const commit = planCommit({

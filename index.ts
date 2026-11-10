@@ -189,6 +189,9 @@ export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
           specialist = {
             model: specialistResolution.model,
             systemPrompt: config.specialistSystemPrompt,
+            // The specialist's own level, independent of the advisor's. Empty omits
+            // the option on the consult leg (advisor.ts's narrowReasoningLevel).
+            reasoning: config.specialistReasoningEffort,
           };
         }
       }
@@ -214,6 +217,12 @@ export default async function advisorTurnGate(pi: ExtensionAPI): Promise<void> {
         ? createSandbox(process.cwd(), SANDBOX_MAX_BYTES)
         : undefined,
       maxToolRounds: config.maxToolRounds,
+      // The advisor call's reasoning level. Empty (the default) omits the option
+      // entirely at the advisor boundary (advisor.ts's narrowReasoningLevel +
+      // conditional spread), so an unset field reproduces today's request byte for
+      // byte. Read here at the I/O layer like maxToolRounds and specialist — the
+      // post-extraction seam direction, not threaded through planGate.
+      reasoning: config.reasoningEffort,
       // FR6: undefined when unconfigured or unresolved — the consult stays undeclared.
       specialist,
     };
