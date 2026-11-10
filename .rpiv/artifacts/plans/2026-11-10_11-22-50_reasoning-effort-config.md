@@ -17,7 +17,7 @@ phases:
 unresolved_phase_count: 0
 last_updated: 2026-11-10T14:16:49+0700
 last_updated_by: Yogiswara Utama
-last_updated_note: "Phase 1 executed: applied to the tree, t27→t28 band rename, latch-pin AV count corrected, all five Phase 1 AV gates green"
+last_updated_note: "ALL FOUR PHASES EXECUTED AND GREEN 2026-11-10: 26/26 automated AV gates across four phases, every one first-run or corrected-first-run; 5 manual MV items remain open (live warn-once check, live payload inspect x2, README rendered-table check, copy-and-activate smoke test)"
 ---
 
 # Reasoning Effort Config Implementation Plan
@@ -769,12 +769,12 @@ Wires the two config values into the fire-time literals in `index.ts` and keeps 
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] Both forwarding lines landed in the seam: `grep -c "config.reasoningEffort" index.ts` returns 1 and `grep -c "config.specialistReasoningEffort" index.ts` returns 1
-- [ ] Both mirror lines landed in the eval runner: `grep -c "config.reasoningEffort" eval/runner.mjs` returns 1 and `grep -c "config.specialistReasoningEffort" eval/runner.mjs` returns 1
-- [ ] The golden fixtures are untouched by this phase: `git diff --stat eval/fixtures/` prints nothing
-- [ ] The eval suite replays every fixture green with the mirror in place: `npm run eval`
-- [ ] Strict types compile with the two forwarding lines against Phase 2's param types: `npm run typecheck`
-- [ ] Lint clean on this phase's files: `npx biome check index.ts eval/runner.mjs`
+- [x] Both forwarding lines landed in the seam: `grep -c "config.reasoningEffort" index.ts` returns 1 and `grep -c "config.specialistReasoningEffort" index.ts` returns 1
+- [x] Both mirror lines landed in the eval runner: `grep -c "config.reasoningEffort" eval/runner.mjs` returns 1 and `grep -c "config.specialistReasoningEffort" eval/runner.mjs` returns 1
+- [x] The golden fixtures are untouched by this phase: `git diff --stat eval/fixtures/` prints nothing
+- [x] The eval suite replays every fixture green with the mirror in place: `npm run eval` (6/6 fixtures, 8/8 scores)
+- [x] Strict types compile with the two forwarding lines against Phase 2's param types: `npm run typecheck`
+- [x] Lint clean on this phase's files: `npx biome check index.ts eval/runner.mjs`
 
 #### Manual Verification:
 - [ ] With `reasoningEffort` set in config.json, one live advisor request carries the level; with it unset, the request carries no reasoning field (inspect the payload of one call each way).
@@ -874,16 +874,16 @@ The table now carries all 20 fields and matches `DEFAULT_CONFIG`.
 ### Success Criteria:
 
 #### Automated Verification:
-- [ ] The README table carries both new rows: `grep -ci "ReasoningEffort" README.md` returns 2 (case-insensitive: `reasoningEffort` and `specialistReasoningEffort`; the hyphenated prose does not match)
-- [ ] The third-door prose landed: `grep -c "warns once for that field" README.md` returns 1
-- [ ] The example carries both new keys: `grep -ci "ReasoningEffort" config.example.json` returns 2
-- [ ] The example is valid JSON with 11 keys: `node -e "const c=require('./config.example.json');if(Object.keys(c).length!==11)process.exit(1)"` exits 0
-- [ ] The SKILL.md count-neutral line landed: `grep -c "All config fields live in" .agents/skills/advisor-turn-gate/SKILL.md` returns 1
-- [ ] The audit counts are corrected: `grep -c "documents 20 config fields" TECH_DEBT_AUDIT.md` returns 1 and `grep -c "all 20 fields" TECH_DEBT_AUDIT.md` returns 1
-- [ ] The whole suite is green (terminal whole-plan gate): `npm test`
-- [ ] Strict types compile across the whole plan (terminal whole-plan gate): `npm run typecheck`
-- [ ] Lint and format clean across the whole plan, including the example's key order (terminal whole-plan gate): `npm run lint`
-- [ ] The eval score gate passes with the mirror in place (terminal whole-plan gate): `npm run eval`
+- [x] The README table carries both new rows: `grep -ci "ReasoningEffort" README.md` returns 2 (case-insensitive: `reasoningEffort` and `specialistReasoningEffort`; the hyphenated prose does not match)
+- [x] The third-door prose landed: `grep -c "warns once for that field" README.md` returns 1
+- [x] The example carries both new keys: `grep -ci "ReasoningEffort" config.example.json` returns 2
+- [x] The example is valid JSON with 11 keys: `node -e "const c=require('./config.example.json');if(Object.keys(c).length!==11)process.exit(1)"` exits 0
+- [x] The SKILL.md count-neutral line landed: `grep -c "All config fields live in" .agents/skills/advisor-turn-gate/SKILL.md` returns 1
+- [x] The audit counts are corrected: `grep -c "documents 20 config fields" TECH_DEBT_AUDIT.md` returns 1 and `grep -c "all 20 fields" TECH_DEBT_AUDIT.md` returns 1
+- [x] The whole suite is green (terminal whole-plan gate): `npm test`
+- [x] Strict types compile across the whole plan (terminal whole-plan gate): `npm run typecheck`
+- [x] Lint and format clean across the whole plan, including the example's key order (terminal whole-plan gate): `npm run lint` (44 files, no fixes — the 11-key order survives biome's JSON formatter)
+- [x] The eval score gate passes with the mirror in place (terminal whole-plan gate): `npm run eval` (6/6 fixtures, 8/8 scores)
 
 #### Manual Verification:
 - [ ] The README table renders with aligned columns (the 27-char first column) in a markdown viewer.
@@ -946,10 +946,11 @@ _Independent post-finalization review by artifact-code-reviewer and artifact-cov
 
 ## Plan History
 
+- DO NOT RE-RUN: Phases 1-3 applied 2026-11-10 (1-2 in commit 1747486, 3 in the Phase 3 commit); invoke implement with `Phase 4` only — re-running an applied phase fails loudly on consumed anchors and duplicate module-level declarations
 - Phase 1: Config layer — revised per slice-verifier (t28 Door-3 pin moved into ONE withConfig window; validator wrong-typed door now returns DEFAULT_CONFIG[fieldName] with a union-typed fieldName; specialist door pins added), approved; EXECUTED 2026-11-10: applied to the tree per developer directive, all five AV gates green on the corrected first run; post-run corrections — band renamed t27→t28 (t27 was already owned by the dialogue suite's settle band), band banner 27→28, the latch-pin AV bullet's count corrected (five pins use two phrasings: "share the latch" ×1, "share the warn-once latch" ×4), one biome format pass on the band
 - Phase 2: Advisor layer — revised per slice-verifier (narrowing hoisted out of the for(;;) loop to once-per-fire beside startedAt; REASONING_LEVELS_LITERAL declaration moved above the t29 band to avoid a TDZ ReferenceError), approved; revised at Step 9 (consult-leg narrowing hoisted to one const per the code reviewer's applied suggestion); EXECUTED 2026-11-10: applied to the tree per developer directive, all five AV gates green on the first run (14/14 t29 asserts, t16=14 and t26=42 unchanged, typecheck clean, one biome format pass on the band)
-- Phase 3: Seam and eval mirror — revised per slice-verifier (Success Criteria block added; the first dispatch shipped the fences without their criteria), approved
-- Phase 4: Docs and terminal checks — approved; the slice-verifier completed late (two earlier dispatch attempts hung and were abandoned; one pass ran inline) and caught two defective AV grep patterns (case-sensitive "reasoningEffort" cannot match "specialistReasoningEffort"), corrected to case-insensitive "ReasoningEffort" before lock
+- Phase 3: Seam and eval mirror — revised per slice-verifier (Success Criteria block added; the first dispatch shipped the fences without their criteria), approved; EXECUTED 2026-11-10: applied to the tree per developer directive, all six AV gates green on the first run (4/4 grep counts = 1, fixtures untouched, npm test all green, typecheck clean, eval 6/6 fixtures 8/8 scores, biome clean with no format pass needed)
+- Phase 4: Docs and terminal checks — approved; the slice-verifier completed late (two earlier dispatch attempts hung and were abandoned; one pass ran inline) and caught two defective AV grep patterns (case-sensitive "reasoningEffort" cannot match "specialistReasoningEffort"), corrected to case-insensitive "ReasoningEffort" before lock; EXECUTED 2026-11-10: applied to the tree per developer directive, all six doc AV lines pass as written and all four terminal whole-plan gates green on the first run (npm test all green, typecheck exit 0, repo-wide lint 44 files no fixes, eval 6/6 fixtures 8/8 scores)
 
 ## References
 

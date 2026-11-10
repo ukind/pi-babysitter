@@ -18,28 +18,32 @@ advisor call entirely. To activate the gate:
 
 `config.json` is read on every turn, so changes apply without a reload. A field that
 is absent or wrong-typed falls back to the default below. Out-of-range numbers are
-clamped into range, with a one-time warning.
+clamped into range, with a one-time warning per process. A reasoning-effort field
+holding a value outside the accepted set (minimal, low, medium, high, xhigh, max)
+warns once for that field, and the option is omitted from the model call.
 
-| Field                    | Default               | Meaning                                                                                                                                                         |
-| ------------------------ | --------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                | `true`                | Master switch. `false` skips the advisor call and the continuation entirely.                                                                                    |
-| `interval`               | `2`                   | Advisor runs on the first completed turn at or past each N-turn boundary. Clamped 1-100.                                                                        |
-| `model`                  | `""` (disabled)       | `provider/modelId` of the advisor model. Empty or unparseable disables the gate.                                                                                |
-| `timeoutMs`              | `60000`               | Advisor call budget in milliseconds. Clamped 1000-60000.                                                                                                        |
-| `systemPrompt`           | code default          | Optional override. The code default is the single source; `config.example.json` carries a copy for reference.                                                   |
-| `customType`             | `"advisor-turn-gate"` | The committed guidance entry's custom type.                                                                                                                     |
-| `display`                | `true`                | Whether the committed entry renders in the TUI transcript.                                                                                                      |
-| `triggerMinNewTokens`    | `0` (disabled)        | Fire before the next boundary when a finished turn grew by this many tokens. Clamped 0-100000.                                                                  |
-| `triggerContextPercent`  | `0` (disabled)        | Fire before the next boundary when the context window is at least this percent full. Clamped 0-100.                                                             |
-| `triggerOnError`         | `false`               | Fire on a turn that ended in an error. Aborted turns never fire.                                                                                                |
-| `triggerRiskyTools`      | `""` (disabled)       | Comma-separated tool names. Any exact match on this turn's tool results fires early.                                                                            |
-| `tokenBudget`            | `0` (disabled)        | Soft cap for the advisor payload in estimated tokens (JSON characters / 4). System messages and the verbatim tail always survive the fold. Clamped 0-1000000.   |
-| `memoryCap`              | `0` (disabled)        | Advisor entries kept per project in the local `.advisor-memory/` store. Each fire appends its advice; the next fire's prompt carries the digest. Clamped 0-200. |
-| `toolsEnabled`           | `false`               | Let the advisor read project files through a read-only sandbox during a fire.                                                                                   |
-| `maxToolRounds`          | `3`                   | Read rounds per fire when `toolsEnabled` is on.                                                                                                                 |
-| `specialistModel`        | `""` (disabled)       | `provider/modelId` of an on-demand specialist the advisor can consult. Empty disables the consult leg.                                                          |
-| `specialistSystemPrompt` | code default          | Optional system prompt for the specialist. The code default is the single source.                                                                               |
-| `asyncMode`              | `false` (blocking)    | Commit the advisor's reply at the next agent settlement instead of blocking turn_end. The advisor never wakes an idle agent.                                    |
+| Field                       | Default               | Meaning                                                                                                                                                                  |
+| --------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enabled`                   | `true`                | Master switch. `false` skips the advisor call and the continuation entirely.                                                                                             |
+| `interval`                  | `2`                   | Advisor runs on the first completed turn at or past each N-turn boundary. Clamped 1-100.                                                                                 |
+| `model`                     | `""` (disabled)       | `provider/modelId` of the advisor model. Empty or unparseable disables the gate.                                                                                         |
+| `timeoutMs`                 | `60000`               | Advisor call budget in milliseconds. Clamped 1000-60000.                                                                                                                 |
+| `systemPrompt`              | code default          | Optional override. The code default is the single source; `config.example.json` carries a copy for reference.                                                            |
+| `customType`                | `"advisor-turn-gate"` | The committed guidance entry's custom type.                                                                                                                              |
+| `display`                   | `true`                | Whether the committed entry renders in the TUI transcript.                                                                                                               |
+| `triggerMinNewTokens`       | `0` (disabled)        | Fire before the next boundary when a finished turn grew by this many tokens. Clamped 0-100000.                                                                           |
+| `triggerContextPercent`     | `0` (disabled)        | Fire before the next boundary when the context window is at least this percent full. Clamped 0-100.                                                                      |
+| `triggerOnError`            | `false`               | Fire on a turn that ended in an error. Aborted turns never fire.                                                                                                         |
+| `triggerRiskyTools`         | `""` (disabled)       | Comma-separated tool names. Any exact match on this turn's tool results fires early.                                                                                     |
+| `tokenBudget`               | `0` (disabled)        | Soft cap for the advisor payload in estimated tokens (JSON characters / 4). System messages and the verbatim tail always survive the fold. Clamped 0-1000000.            |
+| `memoryCap`                 | `0` (disabled)        | Advisor entries kept per project in the local `.advisor-memory/` store. Each fire appends its advice; the next fire's prompt carries the digest. Clamped 0-200.          |
+| `toolsEnabled`              | `false`               | Let the advisor read project files through a read-only sandbox during a fire.                                                                                            |
+| `maxToolRounds`             | `3`                   | Read rounds per fire when `toolsEnabled` is on.                                                                                                                          |
+| `specialistModel`           | `""` (disabled)       | `provider/modelId` of an on-demand specialist the advisor can consult. Empty disables the consult leg.                                                                   |
+| `specialistSystemPrompt`    | code default          | Optional system prompt for the specialist. The code default is the single source.                                                                                        |
+| `asyncMode`                 | `false` (blocking)    | Commit the advisor's reply at the next agent settlement instead of blocking turn_end. The advisor never wakes an idle agent.                                             |
+| `reasoningEffort`           | `""` (unset)          | Reasoning effort for the advisor call: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`. Unset or unlisted omits the option; an unlisted value warns once per process. |
+| `specialistReasoningEffort` | `""` (unset)          | Reasoning effort for the specialist consult, independent of the advisor's. Same accepted values; inert until `specialistModel` is set.                                   |
 
 When `toolsEnabled` is on, the sandbox refuses secret files by name: `.env*`,
 `.npmrc`, `.git`, `id_rsa*`, and `*.pem`. The denylist checks the requested path
