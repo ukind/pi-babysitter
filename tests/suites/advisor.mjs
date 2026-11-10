@@ -982,3 +982,190 @@ for (const bad of [{}, { question: "" }, { question: "   " }, { question: 42 }])
     "t26c: the specialist prompt ships a non-empty default",
   );
 }
+
+// The literal tuple is re-declared in the suite rather than imported: the module's
+// list is private (the DEFAULT_MAX_TOOL_ROUNDS precedent — the parity pin is two
+// INDEPENDENT literal assertions, never a cross-module comparison).
+const REASONING_LEVELS_LITERAL = ["minimal", "low", "medium", "high", "xhigh", "max"];
+
+// --- 29. the reasoning-effort option: the omit-key contract at both completeSimple
+//         sites, the narrowing guard, and the level-list parity pin.
+{
+  // A capturing facade: records the THIRD argument of every call, which every
+  // existing stub ignores (t16/t26 stubs take (model, context) only).
+  const makeCapturingRegistry = (script) => {
+    const seen = [];
+    let step = 0;
+    const registry = {
+      runtime: {
+        completeSimple: (model, context, options) => {
+          seen.push({ model, context, options });
+          const next = script[step] ?? {
+            stopReason: "stop",
+            content: [{ type: "text", text: "x" }],
+          };
+          step += 1;
+          return Promise.resolve(next);
+        },
+      },
+    };
+    return { registry, seen };
+  };
+
+  // (a) The advisor call carries the level when configured.
+  {
+    const { registry, seen } = makeCapturingRegistry([
+      { stopReason: "stop", content: [{ type: "text", text: "advice" }] },
+    ]);
+    const outcome = await runAdvisor({
+      registry,
+      model: { provider: "a", id: "b" },
+      systemPrompt: "sp",
+      messages: [],
+      timeoutMs: 5000,
+      reasoning: "high",
+    });
+    assert(outcome.ok && outcome.text === "advice", "t29: the advisor call still succeeds");
+    assert(seen.length === 1, "t29: one call, no loop armed");
+    assert(seen[0].options?.reasoning === "high", "t29: the advisor call carries reasoning: high");
+  }
+
+  // (b) The omit-key contract: no reasoning param means NO OWN KEY, not undefined.
+  {
+    const { registry, seen } = makeCapturingRegistry([
+      { stopReason: "stop", content: [{ type: "text", text: "advice" }] },
+    ]);
+    await runAdvisor({
+      registry,
+      model: { provider: "a", id: "b" },
+      systemPrompt: "sp",
+      messages: [],
+      timeoutMs: 5000,
+    });
+    assert(
+      seen[0].options !== undefined && !Object.hasOwn(seen[0].options, "reasoning"),
+      "t29: an unset advisor level leaves NO reasoning own key",
+    );
+    assert(seen[0].options?.signal !== undefined, "t29: the signal still rides the options");
+  }
+
+  // (c) The empty string is the unset sentinel, not a level.
+  {
+    const { registry, seen } = makeCapturingRegistry([
+      { stopReason: "stop", content: [{ type: "text", text: "advice" }] },
+    ]);
+    await runAdvisor({
+      registry,
+      model: { provider: "a", id: "b" },
+      systemPrompt: "sp",
+      messages: [],
+      timeoutMs: 5000,
+      reasoning: "",
+    });
+    assert(
+      !Object.hasOwn(seen[0].options ?? {}, "reasoning"),
+      "t29: an empty advisor level omits the key",
+    );
+  }
+
+  // (d) The narrowing guard: an out-of-list value never reaches the provider.
+  {
+    const { registry, seen } = makeCapturingRegistry([
+      { stopReason: "stop", content: [{ type: "text", text: "advice" }] },
+    ]);
+    await runAdvisor({
+      registry,
+      model: { provider: "a", id: "b" },
+      systemPrompt: "sp",
+      messages: [],
+      timeoutMs: 5000,
+      reasoning: "ultra",
+    });
+    assert(
+      !Object.hasOwn(seen[0].options ?? {}, "reasoning"),
+      "t29: an out-of-list advisor level omits the key (the guard's behavioural parity pin)",
+    );
+  }
+
+  // (e) The specialist leg carries its own level, independently of the advisor's.
+  {
+    const specialistModel = { provider: "openai", id: "gpt-5.1" };
+    const { registry, seen } = makeCapturingRegistry([
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "cs1",
+            name: "consult_specialist",
+            arguments: { question: "q?" },
+          },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "specialist answer" }] },
+      { stopReason: "stop", content: [{ type: "text", text: "final" }] },
+    ]);
+    const outcome = await runAdvisor({
+      registry,
+      model: { provider: "a", id: "b" },
+      systemPrompt: "sp",
+      messages: [{ role: "user", content: [{ type: "text", text: "q" }], timestamp: 1 }],
+      timeoutMs: 5000,
+      maxToolRounds: 3,
+      reasoning: "high",
+      specialist: { model: specialistModel, systemPrompt: "sp2", reasoning: "low" },
+    });
+    assert(outcome.ok, "t29: the consult fire succeeds");
+    assert(seen.length === 3, "t29: main + leg + main");
+    assert(seen[0].options?.reasoning === "high", "t29: the advisor rounds carry reasoning: high");
+    assert(
+      seen[1].options?.reasoning === "low",
+      "t29: the specialist leg carries its own reasoning: low",
+    );
+    assert(
+      seen[2].options?.reasoning === "high",
+      "t29: the post-leg advisor round still carries reasoning: high",
+    );
+  }
+
+  // (f) An unset specialist level omits the key on the leg.
+  {
+    const specialistModel = { provider: "openai", id: "gpt-5.1" };
+    const { registry, seen } = makeCapturingRegistry([
+      {
+        stopReason: "toolUse",
+        content: [
+          {
+            type: "toolCall",
+            id: "cs1",
+            name: "consult_specialist",
+            arguments: { question: "q?" },
+          },
+        ],
+      },
+      { stopReason: "stop", content: [{ type: "text", text: "specialist answer" }] },
+      { stopReason: "stop", content: [{ type: "text", text: "final" }] },
+    ]);
+    await runAdvisor({
+      registry,
+      model: { provider: "a", id: "b" },
+      systemPrompt: "sp",
+      messages: [{ role: "user", content: [{ type: "text", text: "q" }], timestamp: 1 }],
+      timeoutMs: 5000,
+      maxToolRounds: 3,
+      specialist: { model: specialistModel, systemPrompt: "sp2" },
+    });
+    assert(
+      !Object.hasOwn(seen[1].options ?? {}, "reasoning"),
+      "t29: an unset specialist level leaves NO reasoning own key on the leg",
+    );
+  }
+
+  // (g) The level-list parity pin: the literal tuple, asserted independently (the
+  //     DEFAULT_MAX_TOOL_ROUNDS two-pin pattern — tools.mjs:337 behavioural,
+  //     :517 literal). Behavioural coverage is (d) above.
+  assert(
+    REASONING_LEVELS_LITERAL.join(",") === "minimal,low,medium,high,xhigh,max",
+    "t29: the advisor-side level list is the six-level tuple, pinned literally",
+  );
+}

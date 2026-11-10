@@ -281,3 +281,91 @@ assert(
 assert(parseModelKey("a:b/c").modelId === "c", "t8: slash wins when both separators are present");
 assert(parseModelKey("gpt-4") === undefined, "t8: no separator returns undefined");
 assert(parseModelKey("/b") === undefined, "t8: a leading separator returns undefined");
+
+// --- 28. the reasoning-effort fields: the three doors, the per-field latch, and the
+//         defaults. Extends t5/t7/t26c; the shared boolean latch is untouched, so the
+//         five "share the warn-once latch" pins elsewhere keep their meaning.
+{
+  // Door 1: a valid level survives, trimmed. Wrong-typed and absent stay silent.
+  const valid = withConfig(JSON.stringify({ reasoningEffort: "  high  " }), () => loadConfig());
+  assert(valid.reasoningEffort === "high", "t28: a padded valid level is trimmed and kept");
+  const silent = captureWarn(() => {
+    const wrong = withConfig(JSON.stringify({ reasoningEffort: 42 }), () => loadConfig());
+    assert(
+      wrong.reasoningEffort === DEFAULT_CONFIG.reasoningEffort,
+      "t28: a wrong-typed reasoningEffort falls back to the default",
+    );
+    const empty = withConfig(JSON.stringify({ reasoningEffort: "   " }), () => loadConfig());
+    assert(empty.reasoningEffort === "", "t28: an empty reasoningEffort is the valid unset state");
+  });
+  assert(silent.length === 0, "t28: wrong-typed and empty fields warn nothing");
+  // Door 3: an unaccepted value warns once, names field/value/levels, and unset.
+  // BOTH reads share ONE withConfig window: withConfig re-arms the latch at entry
+  // (helpers.mjs:41), so two windows would produce two warns and prove nothing —
+  // the t3 idiom (config.mjs:109-117).
+  const warns = captureWarn(() =>
+    withConfig(JSON.stringify({ reasoningEffort: "ultra" }), () => {
+      const bad = loadConfig();
+      assert(bad.reasoningEffort === "", "t28: an unaccepted level unset the field");
+      const again = loadConfig();
+      assert(again.reasoningEffort === "", "t28: the second read still unset the field");
+    }),
+  );
+  assert(warns.length === 1, "t28: an unaccepted level warns once per process");
+  assert(
+    warns[0] ===
+      '[advisor-turn-gate] config.json reasoningEffort "ultra" is not an accepted ' +
+        "reasoning level (accepted minimal, low, medium, high, xhigh, max); the option is omitted",
+    "t28: the warning names the field, the rejected value, and the accepted levels",
+  );
+  // The per-field latch: two bad fields in one read produce two warnings, and the
+  // shared boolean latch is NOT what produces them (a clamp in the same read still
+  // rides the boolean, so the counts stay separable).
+  const twoFields = captureWarn(() =>
+    withConfig(
+      JSON.stringify({ reasoningEffort: "ultra", specialistReasoningEffort: "nope" }),
+      () => loadConfig(),
+    ),
+  );
+  assert(twoFields.length === 2, "t28: two unaccepted fields warn once each");
+  assert(
+    twoFields[0].includes("reasoningEffort") && twoFields[1].includes("specialistReasoningEffort"),
+    "t28: each warning names its own field",
+  );
+  // The latch is per field, not per process: a fresh window re-arms both fields.
+  const reArmed = captureWarn(() =>
+    withConfig(JSON.stringify({ reasoningEffort: "ultra" }), () => loadConfig()),
+  );
+  assert(reArmed.length === 1, "t28: a fresh fixture window re-arms the per-field latch");
+  // The shared boolean latch still caps a clamp read at one warning, and a reasoning
+  // warning does not consume it (the two structures are independent).
+  const mixed = captureWarn(() =>
+    withConfig(JSON.stringify({ interval: 0, reasoningEffort: "ultra" }), () => {
+      const cfg = loadConfig();
+      assert(cfg.interval === MIN_INTERVAL, "t28: the clamp still lands beside the new field");
+      assert(cfg.reasoningEffort === "", "t28: the new field still unset beside the clamp");
+    }),
+  );
+  assert(mixed.length === 2, "t28: a clamp and a reasoning warning are independent latches");
+  // Defaults: both fields ship unset, so today's behavior is the default.
+  assert(DEFAULT_CONFIG.reasoningEffort === "", "t28: the advisor level ships unset");
+  assert(DEFAULT_CONFIG.specialistReasoningEffort === "", "t28: the specialist level ships unset");
+  // The specialist field rides the same three doors, with its own per-field default.
+  const spec = withConfig(JSON.stringify({ specialistReasoningEffort: "low" }), () => loadConfig());
+  assert(spec.specialistReasoningEffort === "low", "t28: a valid specialist level survives");
+  const specSilent = captureWarn(() => {
+    const wrong = withConfig(JSON.stringify({ specialistReasoningEffort: 42 }), () => loadConfig());
+    assert(
+      wrong.specialistReasoningEffort === DEFAULT_CONFIG.specialistReasoningEffort,
+      "t28: a wrong-typed specialist level falls back to its own default",
+    );
+    const empty = withConfig(JSON.stringify({ specialistReasoningEffort: "   " }), () =>
+      loadConfig(),
+    );
+    assert(
+      empty.specialistReasoningEffort === "",
+      "t28: an empty specialist level is the valid unset state",
+    );
+  });
+  assert(specSilent.length === 0, "t28: the specialist doors stay silent");
+}

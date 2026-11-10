@@ -40,6 +40,10 @@ export interface AdvisorGateConfig {
   specialistSystemPrompt: string;
   /** Commit the advisor's reply at the next agent settlement instead of blocking turn_end. */
   asyncMode: boolean;
+  /** Reasoning effort for the advisor call. Empty omits the option entirely. */
+  reasoningEffort: string;
+  /** Reasoning effort for the specialist consult call. Empty omits the option entirely. */
+  specialistReasoningEffort: string;
 }
 
 export const DEFAULT_CONFIG: AdvisorGateConfig = {
@@ -77,6 +81,8 @@ export const DEFAULT_CONFIG: AdvisorGateConfig = {
     "Name the file and the line when you can. Reply in text only: never write " +
     "tool-call markup or anything that imitates a tool call.",
   asyncMode: false,
+  reasoningEffort: "",
+  specialistReasoningEffort: "",
 };
 
 /** Hard bounds. A value outside these is clamped, never rejected. */
@@ -97,8 +103,33 @@ export const MAX_TOOL_ROUNDS = 10;
 
 export const CONFIG_URL = new URL("config.json", import.meta.url);
 
+/**
+ * The accepted reasoning-effort levels, duplicated from the host's THINKING_LEVELS
+ * (pi-ai dist/providers/model-schema.d.ts:2). The runtime value is unreachable from
+ * the package root barrel and this module imports no pi-ai type, so the list is
+ * declared here as data. "off" is deliberately absent: the host converts it to
+ * undefined (openai-completions.js:509), which is indistinguishable from an unset
+ * field. The advisor module carries its own copy for the narrowing guard; the
+ * parity is pinned by each suite's own literal assertion, never by a cross-module
+ * comparison (the DEFAULT_MAX_TOOL_ROUNDS precedent).
+ */
+const REASONING_LEVELS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+
 /** Warn at most once per process — the handler calls loadConfig() on every turn. */
 let configWarned = false;
+
+/**
+ * The per-field warn latch for the reasoning-effort validators.
+ *
+ * A SECOND structure, not a re-key of configWarned: five pins assert that two
+ * clamped fields in one read produce exactly one warning through the shared
+ * boolean (t5, t21c, t22c, t23c, t25c), so warnOnce cannot become per-field
+ * without breaking them. Only the two reasoning-effort validators consult this
+ * set; every clamp and the model-format and broken-config warnings keep riding
+ * the shared boolean. TECH_DEBT_AUDIT.md:138 records duplicated latches as the
+ * accepted price of plain-node loadability.
+ */
+const reasoningWarned = new Set<string>();
 
 function warnOnce(message: string): void {
   if (configWarned) return;
@@ -107,12 +138,16 @@ function warnOnce(message: string): void {
 }
 
 /**
- * Re-arm the warn-once latch. Test-only surface: the suite's withConfig() calls this at
+ * Re-arm the warn-once latches. Test-only surface: the suite's withConfig() calls this at
  * entry, so every fixture window starts fresh and the config tests carry no ordering
  * constraint. Production never re-arms a warning: one notice per process is the contract.
+ *
+ * BOTH latches are cleared: a reasoning-effort warning tripped in one fixture window
+ * must not suppress the same field's warning in the next window.
  */
 export function resetWarnOnceForTest(): void {
   configWarned = false;
+  reasoningWarned.clear();
 }
 
 function clampInt(value: number, min: number, max: number): number {
@@ -137,6 +172,42 @@ function clampWithWarn(fieldName: string, value: number, min: number, max: numbe
     );
   }
   return clamped;
+}
+
+/**
+ * Validate one reasoning-effort field: trim, accept only a listed level, warn once
+ * per field on an unaccepted value.
+ *
+ * Three doors, in order:
+ *   - absent or wrong-typed: silent fallback to THIS field's default (the t5 door —
+ *     a wrong-typed field never reaches a warning), mirroring the per-field
+ *     DEFAULT_CONFIG.<field> fallback the specialistModel/specialistSystemPrompt
+ *     arms use (config.ts:287-294).
+ *   - empty after trim: the valid unset state, silent (the specialistModel
+ *     precedent — empty is not a misconfiguration).
+ *   - present, non-empty, not in the list: warn ONCE for this field and return
+ *     the unset sentinel, so the call omits the option entirely.
+ *
+ * The latch is per field, so two bad fields in one read produce two warnings.
+ */
+function reasoningLevelOrUnset(
+  fieldName: "reasoningEffort" | "specialistReasoningEffort",
+  value: unknown,
+): string {
+  if (typeof value !== "string") return DEFAULT_CONFIG[fieldName];
+  const trimmed = value.trim();
+  if (trimmed === "") return trimmed;
+  if (!REASONING_LEVELS.includes(trimmed as (typeof REASONING_LEVELS)[number])) {
+    if (!reasoningWarned.has(fieldName)) {
+      reasoningWarned.add(fieldName);
+      console.warn(
+        `[advisor-turn-gate] config.json ${fieldName} "${trimmed}" is not an accepted ` +
+          `reasoning level (accepted ${REASONING_LEVELS.join(", ")}); the option is omitted`,
+      );
+    }
+    return "";
+  }
+  return trimmed;
 }
 
 /**
@@ -294,6 +365,11 @@ export function loadConfig(): AdvisorGateConfig {
           : DEFAULT_CONFIG.specialistSystemPrompt,
       asyncMode:
         typeof parsed.asyncMode === "boolean" ? parsed.asyncMode : DEFAULT_CONFIG.asyncMode,
+      reasoningEffort: reasoningLevelOrUnset("reasoningEffort", parsed.reasoningEffort),
+      specialistReasoningEffort: reasoningLevelOrUnset(
+        "specialistReasoningEffort",
+        parsed.specialistReasoningEffort,
+      ),
     };
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;

@@ -1,4 +1,11 @@
-import type { Api, AssistantMessage, Message, Model, ToolCall } from "@earendil-works/pi-ai";
+import type {
+  Api,
+  AssistantMessage,
+  Message,
+  Model,
+  ThinkingLevel,
+  ToolCall,
+} from "@earendil-works/pi-ai";
 
 /**
  * advisor.ts — the advisor model call.
@@ -23,7 +30,7 @@ interface ModelRegistryLike {
 type CompleteSimpleFn = (
   model: Model<Api>,
   context: { systemPrompt: string; messages: Message[]; tools?: AdvisorTool[] },
-  options?: { signal?: AbortSignal; reasoning?: string; sessionId?: string },
+  options?: { signal?: AbortSignal; reasoning?: ThinkingLevel; sessionId?: string },
 ) => Promise<AssistantMessage>;
 
 export type AdvisorResolution = { ok: true; model: Model<Api> } | { ok: false; reason: string };
@@ -51,6 +58,44 @@ export type ToolExecutor = (name: string, args: unknown) => ToolExecutionResult;
  * sibling and cannot read the constant.
  */
 const DEFAULT_MAX_TOOL_ROUNDS = 3;
+
+/**
+ * The accepted reasoning-effort levels, duplicated from the host's THINKING_LEVELS
+ * (pi-ai dist/providers/model-schema.d.ts:2).
+ *
+ * Deliberately the SAME six values as config.ts's REASONING_LEVELS: the offline
+ * suite pins the parity (t29), because this module imports no sibling and cannot
+ * read the constant — the DEFAULT_MAX_TOOL_ROUNDS pattern (advisor.ts:47-53).
+ * "off" is absent for the same reason config.ts omits it: the host converts it to
+ * undefined (openai-completions.js:509), which is indistinguishable from an unset
+ * field.
+ *
+ * The TYPE is imported from the package root (types.d.ts:18 re-exports
+ * ThinkingLevel); only the runtime VALUE is unreachable, so the list is data here.
+ */
+const REASONING_LEVELS: readonly ThinkingLevel[] = [
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+];
+
+/**
+ * Narrow one config-supplied reasoning level to the host's ThinkingLevel, or
+ * undefined when it must be omitted.
+ *
+ * config.ts already validated the value against the same six levels and unset an
+ * unaccepted one, so this guard is a second, independent door: a value that
+ * bypasses the config layer (a direct runAdvisor caller, the eval mirror's blind
+ * DEFAULT_CONFIG spread) still cannot reach the provider outside the union. The
+ * empty string is the unset sentinel, not a level.
+ */
+function narrowReasoningLevel(value: string | undefined): ThinkingLevel | undefined {
+  if (value === undefined || value === "") return undefined;
+  return REASONING_LEVELS.includes(value as ThinkingLevel) ? (value as ThinkingLevel) : undefined;
+}
 
 /**
  * Pinned refusal for a toolUse naming a tool this fire never declared (t26).
@@ -119,6 +164,11 @@ export const CONSULT_ANSWER_HEADER = "Specialist consult answer:";
 export interface SpecialistConfig {
   model: Model<Api>;
   systemPrompt: string;
+  /**
+   * The specialist's reasoning level, straight from config.specialistReasoningEffort.
+   * Empty or absent omits the option; narrowReasoningLevel enforces the union.
+   */
+  reasoning?: string;
 }
 
 /**
@@ -388,6 +438,9 @@ async function runConsultLeg(
     return { ok: false, reason: CONSULT_QUESTION_REFUSAL };
   }
   try {
+    // Narrowed ONCE per leg, before the call: the same single-evaluation discipline
+    // the loop path applies (the per-round literal below).
+    const specialistLevel = narrowReasoningLevel(specialist.reasoning);
     const response = await callWithDeadline(
       (signal) =>
         completeSimple(
@@ -402,7 +455,13 @@ async function runConsultLeg(
               },
             ],
           },
-          { signal },
+          {
+            signal,
+            // The conditional spread is load-bearing: a literal reasoning: undefined
+            // would still create the key, and t29 pins its absence (the plan-turn.ts:26-30
+            // idiom).
+            ...(specialistLevel ? { reasoning: specialistLevel } : {}),
+          },
         ),
       budgetMs,
       externalSignal,
@@ -469,6 +528,11 @@ export async function runAdvisor(params: {
   maxToolRounds?: number;
   /** The optional specialist (FR6). Absent keeps consult_specialist undeclared. */
   specialist?: SpecialistConfig;
+  /**
+   * The advisor call's reasoning level, straight from config.reasoningEffort.
+   * Empty or absent omits the option; narrowReasoningLevel enforces the union.
+   */
+  reasoning?: string;
 }): Promise<AdvisorOutcome> {
   // This guard stays BEFORE the try: it is a fail-fast precondition, not a transport
   // failure for the deadline machinery to own. t16 pins the exact reason string, and the
@@ -497,6 +561,9 @@ export async function runAdvisor(params: {
     // budget, never a fresh one. Round 1 gets the full budget, so an unarmed
     // call's timing is identical to the old shape.
     const startedAt = Date.now();
+    // Narrowed ONCE per fire, before the loop: the value is a config snapshot and
+    // cannot change mid-loop, so every round sends the same level (or none).
+    const reasoning = narrowReasoningLevel(params.reasoning);
     let conversation = [...params.messages];
     // FR6: successful consult answers aggregate into the committed text, in fire order.
     const consultAnswers: string[] = [];
@@ -516,7 +583,13 @@ export async function runAdvisor(params: {
           completeSimple(
             params.model,
             { systemPrompt: params.systemPrompt, messages: conversation, tools: requestTools },
-            { signal },
+            {
+              signal,
+              // The conditional spread is load-bearing: a literal reasoning: undefined
+              // would still create the key, and t29 pins its absence (the plan-turn.ts:26-30
+              // idiom).
+              ...(reasoning ? { reasoning } : {}),
+            },
           ),
         remaining,
         params.signal,
