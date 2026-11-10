@@ -15,9 +15,9 @@ phases:
   - { n: 3, title: Seam and eval mirror, files: [index.ts, eval/runner.mjs], depends_on: [1, 2] }
   - { n: 4, title: Docs and terminal checks, files: [README.md, config.example.json, .agents/skills/advisor-turn-gate/SKILL.md, TECH_DEBT_AUDIT.md], depends_on: [1, 2, 3] }
 unresolved_phase_count: 0
-last_updated: 2026-11-10T14:16:49+0700
+last_updated: 2026-11-10T16:05:03+0700
 last_updated_by: Yogiswara Utama
-last_updated_note: "ALL FOUR PHASES EXECUTED AND GREEN 2026-11-10: 26/26 automated AV gates across four phases, every one first-run or corrected-first-run; 5 manual MV items remain open (live warn-once check, live payload inspect x2, README rendered-table check, copy-and-activate smoke test)"
+last_updated_note: "Validation note 2026-11-10: Verification-Notes tsc-coverage claim corrected (index.ts IS type-checked); validation verdict pass (report 2026-11-10_15-44-25). | ALL FOUR PHASES EXECUTED AND GREEN 2026-11-10: 26/26 automated AV gates across four phases, every one first-run or corrected-first-run; 5 manual MV items remain open (live warn-once check, live payload inspect x2, README rendered-table check, copy-and-activate smoke test)"
 ---
 
 # Reasoning Effort Config Implementation Plan
@@ -898,7 +898,7 @@ Phase 1 before Phase 2 (advisor tests reference the config vocabulary and the su
 - Known risk: the five shared-latch pins (`tests/suites/config.mjs:169-171`, `triggers.mjs:210`, `prompt.mjs:443`, `memory.mjs:250`, `tools.mjs:515`) must stay green untouched — they are the constraint that forces the second latch structure. Check: run `npm test` and confirm the five "share the warn-once latch" PASS lines are unchanged. CORRECTED 2026-11-10 at execution: the five pins use two phrasings — t5 says "share the latch" (config.mjs:170), the other four say "share the warn-once latch"; count with `grep -cE "share the (warn-once )?latch"` (returns 5).
 - Known risk: every existing completion stub ignores the options argument, so a regressed `{ signal, reasoning: undefined }` is invisible to the current suite. Check: the new t29 pins must assert `Object.hasOwn(options, "reasoning") === false`, not truthiness.
 - Known risk: the eval mirror drifts silently (already diverged once on `signal`). Check: `npm run eval` passes with fixtures unchanged; grep the runner for `reasoningEffort` to confirm both mirror lines landed.
-- Known risk: `tsc` cannot see the eval mirror (untyped `.mjs`) and `index.ts` is imported by nothing executable, so the two forwarding lines have zero typecheck coverage. Check: `npm run typecheck` green AND a grep for `config.reasoningEffort` in both `index.ts` and `eval/runner.mjs`.
+- Known risk: `tsc` cannot see the eval mirror (untyped `.mjs`); `index.ts` itself IS covered — `tsc --noEmit` type-checks it whether or not anything imports it (CORRECTED 2026-11-10 at validation: the earlier "zero typecheck coverage" claim here was wrong). The grep still earns its keep for the mirror. Check: `npm run typecheck` green AND a grep for `config.reasoningEffort` in both `index.ts` and `eval/runner.mjs`.
 - Precedent lesson: latch changes are test-heavy (commit `faa98a5`: 124 test lines per 37 code lines). Actual band sizes: Phase 1 t28 carries ~20 asserts, Phase 2 t29 ~14 — both grew past the skeleton's ~8/~6 budget during verification, exactly as the precedent predicts. Budget the suite work first and expect the bands to grow.
 - Precedent lesson: duplicated constants need two pins (`tools.mjs:337` behavioural, `:517` literal). The advisor-side list gets exactly that pair in t29.
 - Warn message format is contract: pin the exact string, which also pins config's list contents by enumeration.
